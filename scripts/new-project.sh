@@ -345,3 +345,4 @@ EOF
 echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
 echo -e "${CYAN}[Tip] En tu máquina local puedes usar la plantilla en 'examples/client-project/'${NC}"
 echo -e "${CYAN}      para levantar WireGuard + Nginx local con esta configuración.${NC}\n"
+
