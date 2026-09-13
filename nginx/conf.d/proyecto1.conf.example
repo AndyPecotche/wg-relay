@@ -19,9 +19,9 @@ server {
     }
 }
 
-# Servidor Seguro HTTPS (Puerto 443)
+# Servidor Seguro HTTPS (Despachado internamente por el SNI Multiplexer desde el puerto público 443)
 server {
-    listen 443 ssl;
+    listen 127.0.0.1:8443 ssl;
     http2 on;
     # Acepta el dominio principal del proyecto y cualquier subservicio (ej. api.dominio-proyecto1.com)
     server_name dominio-proyecto1.com *.dominio-proyecto1.com;

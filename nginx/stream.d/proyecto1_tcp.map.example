@@ -1,0 +1,10 @@
+# ==============================================================================
+# Regla SNI (Layer 4 Stream Multiplexer en Puerto 443): proyecto1
+# ==============================================================================
+# Cuando un cliente TCP con TLS (ESP32 MQTTS, DB, gRPC o socket) se conecta
+# al puerto público 443 con este hostname SNI, Nginx Stream lo desvía
+# al terminador TLS interno correspondiente (127.0.0.1:10001).
+# ==============================================================================
+
+tcp.dominio-proyecto1.com     127.0.0.1:10001;
+mqtt.dominio-proyecto1.com    127.0.0.1:10001;

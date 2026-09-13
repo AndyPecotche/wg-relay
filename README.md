@@ -24,46 +24,57 @@
 ```mermaid
 flowchart TD
     subgraph Internet ["🌐 Internet Público"]
-        ClientWeb["Cliente Web / API (HTTPS :443)"]
-        ClientTCP["Cliente TCP / Dispositivo IoT (TCP TLS :8883 / :puerto)"]
+        ClientWeb["Cliente Web / Navegador / API<br/>(HTTPS :443)"]
+        ClientTCP["Dispositivos IoT / Clientes TCP<br/>(MQTTS, gRPC, DB vía TLS :443 con SNI)"]
         CF_DNS["Cloudflare DNS (Desafíos DNS-01 por Dominio)"]
     end
 
-    subgraph VPS ["🖥️ Relay VPS (wg-relay)"]
-        subgraph DockerNet ["Red Docker Bridge Estática (172.28.0.0/16)"]
-            Nginx["Nginx Reverse Proxy<br/>IP: 172.28.0.10<br/>• L7: conf.d/*.conf (Web/API)<br/>• L4: stream.d/*.conf (Servicios TCP)<br/>• Terminación TLS"]
-            WG_Server["WireGuard Gateway<br/>IP: 172.28.0.2<br/>VPN: 10.10.0.1/16<br/>• Firewall: wg0 a wg0 REJECT"]
-            Certbot["Certbot Daemon<br/>IP: 172.28.0.20<br/>• DNS-01 Cloudflare"]
+    subgraph VPS ["🖥️ Relay VPS (wg-relay - Solo Puertos 80 y 443 expuestos)"]
+        subgraph NginxArch ["Nginx Ingress Multiplexer"]
+            StreamL4["Stream L4 Multiplexer (Puerto Público :443)<br/>• ssl_preread on;<br/>• Inspección SNI (ClientHello)"]
+            MapRules["Mapa SNI (/stream.d/*.map)<br/>• mqtt.dominio -> 127.0.0.1:10001<br/>• default -> 127.0.0.1:8443"]
+            HttpL7["HTTP L7 Engine (Loopback 127.0.0.1:8443)<br/>• VirtualHosts Web/API (conf.d/*.conf)<br/>• Terminación TLS Web + Headers + WebSockets"]
+            TermL4["Terminadores TLS TCP (Loopback 127.0.0.1:10001+)<br/>• Terminación TLS de Servicios TCP<br/>• Reenvío de flujo TCP puro sobre WireGuard"]
         end
+        WG_Server["WireGuard Gateway<br/>IP: 172.28.0.2 | VPN: 10.10.0.1/16<br/>• Firewall: wg0 a wg0 REJECT (Aislamiento Zero-Trust)"]
+        Certbot["Certbot Daemon<br/>IP: 172.28.0.20<br/>• DNS-01 Cloudflare Wildcard"]
     end
 
     subgraph CGNAT_Area ["🔒 Redes Privadas / Detrás de CGNAT (Sin IP Pública)"]
         subgraph Proj1 ["Proyecto 1 (10.10.1.2)"]
             WG_Peer1["WireGuard Client (Proyecto 1)<br/>(PersistentKeepalive=25)"]
-            Web1["Servicio Web / HTTP (:80)"]
-            TCP1["Servicio TCP / Broker MQTT (:1883)"]
+            NginxLoc1["Nginx Local (Puerto 80)<br/>Enrutador de microservicios"]
+            App1["Apps Web / API"]
+            Broker1["Broker MQTT / Servicio TCP (:1883)"]
         end
 
         subgraph Proj2 ["Proyecto 2 (10.10.2.2)"]
             WG_Peer2["WireGuard Client (Proyecto 2)<br/>(PersistentKeepalive=25)"]
-            TCP2["Servicio TCP / Backend API (:3000)"]
+            DB2["Base de Datos / Backend (:5432)"]
         end
     end
 
-    ClientWeb -->|"HTTPS :443"| Nginx
-    ClientTCP -->|"TCP TLS :8883"| Nginx
+    ClientWeb -->|"HTTPS :443 (SNI: dominio-proyecto1.com)"| StreamL4
+    ClientTCP -->|"TLS :443 (SNI: mqtt.dominio-proyecto1.com)"| StreamL4
     Certbot <-->|"DNS-01 API"| CF_DNS
 
-    Nginx -->|"Ruta L3: 10.10.0.0/16"| WG_Server
+    StreamL4 -->|"Inspección SNI"| MapRules
+    MapRules -->|"default (Tráfico Web)"| HttpL7
+    MapRules -->|"Coincidencia SNI TCP"| TermL4
+
+    HttpL7 -->|"HTTP Proxy a 10.10.1.2:80"| WG_Server
+    TermL4 -->|"TCP Puro a 10.10.1.2:1883"| WG_Server
+
     WG_Server -->|"Túnel UDP 51820"| WG_Peer1
     WG_Server -->|"Túnel UDP 51820"| WG_Peer2
 
-    WG_Peer1 --> Web1
-    WG_Peer1 --> TCP1
-    WG_Peer2 --> TCP2
+    WG_Peer1 --> NginxLoc1
+    NginxLoc1 --> App1
+    WG_Peer1 --> Broker1
+    WG_Peer2 --> DB2
 
     %% Aislamiento
-    WG_Peer1 x--x|"Tráfico lateral bloqueado (iptables)"| WG_Peer2
+    WG_Peer1 x--x|"Tráfico lateral bloqueado (iptables kernel)"| WG_Peer2
 ```
 
 ---
@@ -80,11 +91,13 @@ wg-relay/
 │   ├── cloudflare.ini.example          # Plantilla del Token de API de Cloudflare
 │   └── init-cert.sh                    # Script de solicitud inicial de certificado Wildcard
 ├── nginx/
-│   ├── nginx.conf                      # Configuración base con soporte L7 (http) y L4 (stream)
+│   ├── nginx.conf                      # Configuración base con SNI Preread Multiplexer en puerto 443
 │   ├── conf.d/
-│   │   └── proyecto1.conf.example      # Plantilla L7 Ingress: Wildcard *.proyecto1 -> Nginx Local
+│   │   └── proyecto1.conf.example      # Plantilla L7 Ingress: escucha en loopback 127.0.0.1:8443
 │   └── stream.d/
-│       └── proyecto1_tcp.conf.example  # Plantilla L4: Proxy TCP con terminación TLS (Servicio TCP)
+│       ├── 00-base.map.example         # Mapa base para evitar fallos de include
+│       ├── proyecto1_tcp.map.example   # Mapeo SNI -> 127.0.0.1:10001
+│       └── proyecto1_tcp.conf.example  # Terminador TLS L4 hacia el peer WireGuard
 ├── wireguard/
 │   ├── assemble.sh                     # Compilador idempotente de peers y sync en caliente
 │   ├── templates/
@@ -115,8 +128,7 @@ wg-relay/
 - **Docker Engine y Docker Compose:** Docker v24+ y Compose v2+.
 - **Puertos del VPS abiertos en el Firewall del Proveedor:**
   - `80/TCP` (HTTP Ingress / Redirección HTTPS)
-  - `443/TCP` (HTTPS Ingress L7 - Web / APIs)
-  - `8883/TCP` (Servicio TCP / MQTTS TLS Ingress L4 - o puertos TCP que requieran tus proyectos)
+  - `443/TCP` (HTTPS & TCP TLS Ingress Multiplexado por SNI - ¡Un solo puerto para todo!)
   - `51820/UDP` (WireGuard VPN Handshake)
 
 ---
@@ -141,8 +153,7 @@ sudo ufw default deny incoming
 sudo ufw default allow outgoing
 sudo ufw allow 22/tcp comment 'SSH'
 sudo ufw allow 80/tcp comment 'HTTP Ingress'
-sudo ufw allow 443/tcp comment 'HTTPS Ingress'
-sudo ufw allow 8883/tcp comment 'Servicio TCP TLS Ingress (ej. MQTTS)'
+sudo ufw allow 443/tcp comment 'HTTPS & TLS Stream Multiplexer (Web y TCP)'
 sudo ufw allow 51820/udp comment 'WireGuard VPN'
 sudo ufw enable
 ```
@@ -239,12 +250,15 @@ Para incorporar cualquier proyecto nuevo a la red y exponer sus servicios, solo 
 2. **Generación del Ingress L7 en Nginx:**
    - Crea el archivo `nginx/conf.d/<IP>-<dominio>.conf` (ej. `10.10.1.2-sensorhub.andy.net.ar.conf`).
    - Configura la regla comodín (`server_name <dominio> *.<dominio>`) delegando todo el tráfico HTTP/HTTPS hacia `http://<IP>:80` con preservación del encabezado `Host $host`.
-3. **Configuración Opcional de TCP Stream L4 (MQTTS, DB, Sockets):**
-   - El script te pregunta si deseas habilitar un proxy TCP para este proyecto.
-   - De ser afirmativo, detecta el siguiente puerto de escucha público libre desde el **`8083` hasta el `50000`** (ej. `8083`, `8084`...).
+3. **Configuración Opcional de TCP Stream con TLS en Puerto 443 (MQTTS, DB, gRPC, Sockets):**
+   - El script te pregunta si deseas habilitar un proxy TCP multiplexado por SNI para este proyecto.
+   - De ser afirmativo, solicita el subdominio que usará tu servicio (ej. `mqtt.sensorhub.andy.net.ar` o `tcp.sensorhub.andy.net.ar`).
    - Solicita el puerto interno del contenedor/servicio remoto (ej. `1883` para MQTT o `5432` para PostgreSQL).
-   - Crea el archivo:
-     `nginx/stream.d/<PUERTO>-<dominio>.conf` (ej. `8083-sensorhub.andy.net.ar.conf`).
+   - Asigna un puerto de loopback interno (`10001..20000`, ej. `10001`) que **nunca se expone públicamente**.
+   - Genera dos archivos:
+     - `nginx/stream.d/<IP>-<dominio>.map`: Regla SNI que redirige ese subdominio a `127.0.0.1:10001`.
+     - `nginx/stream.d/<IP>-<dominio>.conf`: Terminador TLS interno que descifra el tráfico y lo envía vía WireGuard hacia `<IP>:<puerto_interno>`.
+   - **Ventaja:** Tanto el tráfico Web (HTTPS) como el servicio TCP (MQTTS, gRPC) ingresan **por el mismo puerto 443**. ¡No requiere abrir puertos adicionales en ningún firewall!
 4. **Validación de Certificados TLS:**
    - Comprueba si el certificado para ese dominio ya existe en `certbot/conf/live/<dominio>/`.
    - Si no existe, te ofrece emitir el certificado comodín con Cloudflare DNS-01 en ese mismo instante.
@@ -284,8 +298,8 @@ En el servidor local, Raspberry Pi o máquina donde corre tu proyecto:
    docker compose up -d
    ```
 4. Ya puedes acceder desde Internet a:
-   - **Web / API:** `https://<dominio>` y `https://*.<dominio>`
-   - **TCP Stream:** `<IP_O_HOST_VPS>:<PUERTO_ASIGNADO>` (con TLS)
+   - **Web / API:** `https://<dominio>` y `https://*.<dominio>` (Puerto 443)
+   - **TCP Stream con TLS:** `<subdominio_tcp>:443` (ej. `mqtt.sensorhub.andy.net.ar:443`, MQTTS / gRPC / DB vía TLS en puerto estándar 443)
 
 ---
 

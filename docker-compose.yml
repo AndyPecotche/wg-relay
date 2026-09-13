@@ -55,11 +55,8 @@ services:
         exec nginx -g 'daemon off;'
       "
     ports:
-      - "80:80"       # HTTP Ingress (Redirect to HTTPS)
-      - "443:443"     # HTTPS Ingress (L7 Reverse Proxy)
-      - "1883:1883"   # MQTT Raw Ingress (Opcional L4 Stream)
-      - "8883:8883"   # MQTTS TLS Ingress (L4 Stream con terminación SSL)
-      - "8083-8200:8083-8200" # Pool de puertos para proxies TCP Stream dinámicos
+      - "80:80"       # HTTP Ingress (Redirección global a HTTPS)
+      - "443:443"     # Ingress Único TLS: Web/HTTPS + Servicios TCP (Multiplexados por SNI)
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro

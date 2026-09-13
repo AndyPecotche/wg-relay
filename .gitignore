@@ -18,6 +18,9 @@ nginx/conf.d/*.conf
 !nginx/conf.d/*.example
 nginx/stream.d/*.conf
 !nginx/stream.d/*.example
+nginx/stream.d/*.map
+!nginx/stream.d/*.example
+!nginx/stream.d/00-base.map
 
 # Archivos de sistema y editores
 .DS_Store

@@ -6,8 +6,8 @@
 # 1. Asignación automática de IP en la VPN (10.10.x.y)
 # 2. Generación de claves WireGuard y archivo en wireguard/peers.d/<IP>-<proyecto>.conf
 # 3. Creación de VirtualHost Nginx L7 en nginx/conf.d/<IP>-<dominio>.conf
-# 4. Configuración opcional de TCP Stream en nginx/stream.d/<PUERTO>-<dominio>.conf
-#    con asignación automática de puerto de escucha (8083 a 50000)
+# 4. Configuración opcional de TCP Stream con TLS en puerto 443 (SNI Multiplexer)
+#    generando nginx/stream.d/<IP>-<dominio>.map y .conf con terminador interno (10001+)
 # 5. Verificación y emisión opcional de certificados TLS con Cloudflare DNS-01
 # 6. Recarga en caliente sin downtime de WireGuard y Nginx
 # 7. Entrega de configuración lista para el cliente local
@@ -173,7 +173,7 @@ server {
 }
 
 server {
-    listen 443 ssl;
+    listen 127.0.0.1:8443 ssl;
     http2 on;
     server_name ${PROJECT_DOMAIN} *.${PROJECT_DOMAIN};
 
@@ -211,18 +211,18 @@ EOF
 echo -e "${GREEN}[✓] VirtualHost Nginx L7 creado:${NC} ${NGINX_CONF_FILE}"
 
 # ------------------------------------------------------------------------------
-# 5. Configuración Opcional de TCP Stream Layer 4 (stream.d)
+# 5. Configuración Opcional de TCP Stream con TLS en Puerto 443 (SNI Multiplexer)
 # ------------------------------------------------------------------------------
-find_next_stream_port() {
-    local assigned_ports
-    assigned_ports=$(find "${STREAM_DIR}" -type f -name "*.conf" 2>/dev/null | \
-                     sed -n 's/.*\/[0-9]*\/\?\([0-9]\+\)-.*/\1/p' || true)
+find_next_internal_stream_port() {
     local config_ports
     config_ports=$(find "${STREAM_DIR}" -type f -name "*.conf" 2>/dev/null | \
-                   xargs grep -rhoE 'listen[[:space:]]+[0-9]+' 2>/dev/null | awk '{print $2}' || true)
-    local all_ports="${assigned_ports} ${config_ports} 1883 8883"
+                   xargs grep -rhoE '127\.0\.0\.1:[0-9]+' 2>/dev/null | sed 's/127\.0\.0\.1://' || true)
+    local map_ports
+    map_ports=$(find "${STREAM_DIR}" -type f -name "*.map" 2>/dev/null | \
+                xargs grep -rhoE '127\.0\.0\.1:[0-9]+' 2>/dev/null | sed 's/127\.0\.0\.1://' || true)
+    local all_ports="${config_ports} ${map_ports} 8443"
 
-    for port in $(seq 8083 50000); do
+    for port in $(seq 10001 20000); do
         if ! echo "${all_ports}" | grep -qw "${port}"; then
             echo "${port}"
             return 0
@@ -231,47 +231,68 @@ find_next_stream_port() {
     return 1
 }
 
-STREAM_PORT=""
 STREAM_INTERNAL_PORT=""
-echo -e "\n${BOLD}¿Deseas configurar un proxy TCP (Stream) para este proyecto?${NC} (ej. MQTT, DB, Socket)"
-read -r -p "Habilitar proxy TCP? (s/N): " ENABLE_STREAM
+STREAM_REMOTE_PORT=""
+TCP_SUBDOMAIN=""
+STREAM_CONF_FILE=""
+STREAM_MAP_FILE=""
+
+echo -e "\n${BOLD}¿Deseas configurar un servicio TCP con TLS en puerto 443 (SNI Multiplexer)?${NC} (ej. MQTTS, gRPC, DB, sockets)"
+read -r -p "Habilitar proxy TCP SNI en puerto 443? (s/N): " ENABLE_STREAM
 
 if [[ "$ENABLE_STREAM" =~ ^([sS][iI]|[sS])$ ]]; then
     mkdir -p "${STREAM_DIR}"
-    AUTO_STREAM_PORT=$(find_next_stream_port)
-    echo -e "${GREEN}[+] Siguiente puerto de escucha TCP disponible:${NC} ${BOLD}${AUTO_STREAM_PORT}${NC}"
-    read -r -p "Presiona Enter para usar ${AUTO_STREAM_PORT} o indica otro puerto: " USER_STREAM_PORT
-    STREAM_PORT="${USER_STREAM_PORT:-${AUTO_STREAM_PORT}}"
 
-    read -r -p "Puerto TCP interno en el cliente remoto (ej. 1883 para MQTT, 5432 para DB) [default: 1883]: " USER_INT_PORT
-    STREAM_INTERNAL_PORT="${USER_INT_PORT:-1883}"
+    # Asignar puerto loopback interno
+    STREAM_INTERNAL_PORT=$(find_next_internal_stream_port)
 
-    STREAM_FILE="${STREAM_DIR}/${STREAM_PORT}-${PROJECT_DOMAIN}.conf"
+    # Preguntar subdominio TCP para multiplexar por SNI
+    DEFAULT_TCP_SUBDOMAIN="tcp.${PROJECT_DOMAIN}"
+    read -r -p "Subdominio TLS para este servicio TCP [default: ${DEFAULT_TCP_SUBDOMAIN}]: " USER_SUBDOMAIN
+    TCP_SUBDOMAIN="${USER_SUBDOMAIN:-${DEFAULT_TCP_SUBDOMAIN}}"
+    TCP_SUBDOMAIN=$(echo "${TCP_SUBDOMAIN}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
 
-    cat <<EOF > "${STREAM_FILE}"
+    # Preguntar puerto TCP destino en el cliente remoto
+    read -r -p "Puerto TCP interno en el cliente remoto (ej. 1883 para MQTT, 5432 para DB) [default: 1883]: " USER_REM_PORT
+    STREAM_REMOTE_PORT="${USER_REM_PORT:-1883}"
+
+    STREAM_MAP_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map"
+    STREAM_CONF_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf"
+
+    # Generar mapeo SNI
+    cat <<EOF > "${STREAM_MAP_FILE}"
 # ==============================================================================
-# Stream TCP L4: ${PROJECT_NAME} (${PROJECT_DOMAIN})
-# Escucha pública TLS: ${STREAM_PORT} -> Destino remoto: ${PEER_IP}:${STREAM_INTERNAL_PORT}
+# Regla SNI (Port 443 Stream Multiplexer): ${PROJECT_NAME}
+# ==============================================================================
+${TCP_SUBDOMAIN}    127.0.0.1:${STREAM_INTERNAL_PORT};
+EOF
+
+    # Generar terminador TLS interno
+    cat <<EOF > "${STREAM_CONF_FILE}"
+# ==============================================================================
+# Terminador TLS Interno (Stream L4): ${PROJECT_NAME} (${TCP_SUBDOMAIN})
+# Escucha interna: 127.0.0.1:${STREAM_INTERNAL_PORT} -> Destino remoto: ${PEER_IP}:${STREAM_REMOTE_PORT}
 # ==============================================================================
 
 server {
-    listen ${STREAM_PORT} ssl;
+    listen 127.0.0.1:${STREAM_INTERNAL_PORT} ssl;
 
     ssl_certificate     /etc/letsencrypt/live/${PROJECT_DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${PROJECT_DOMAIN}/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_session_cache shared:SSL_TCP_${PROJECT_NAME}_${STREAM_PORT}:10m;
+    ssl_session_cache shared:SSL_TCP_${PROJECT_NAME}_${STREAM_INTERNAL_PORT}:10m;
     ssl_session_timeout 4h;
 
     proxy_timeout 1h;
     proxy_connect_timeout 10s;
 
-    proxy_pass ${PEER_IP}:${STREAM_INTERNAL_PORT};
+    proxy_pass ${PEER_IP}:${STREAM_REMOTE_PORT};
 }
 EOF
-    echo -e "${GREEN}[✓] Proxy TCP Stream L4 creado:${NC} ${STREAM_FILE}"
+    echo -e "${GREEN}[✓] Regla SNI creada:${NC} ${STREAM_MAP_FILE}"
+    echo -e "${GREEN}[✓] Terminador TLS interno creado (puerto loopback 127.0.0.1:${STREAM_INTERNAL_PORT}):${NC} ${STREAM_CONF_FILE}"
 fi
 
 # ------------------------------------------------------------------------------
@@ -312,16 +333,17 @@ echo -e "\n${GREEN}=============================================================
 echo -e "${GREEN}${BOLD} ¡PROYECTO '${PROJECT_NAME}' REGISTRADO EXITOSAMENTE! ${NC}"
 echo -e "${GREEN}========================================================================${NC}"
 echo -e "${BOLD}Archivos generados en el VPS:${NC}"
-echo -e "  - Peer WireGuard: ${PEER_FILE}"
-echo -e "  - VirtualHost L7: ${NGINX_CONF_FILE}"
-if [ -n "${STREAM_PORT}" ]; then
-    echo -e "  - Proxy TCP L4:   ${STREAM_FILE}"
+echo -e "  - Peer WireGuard:  ${PEER_FILE}"
+echo -e "  - VirtualHost L7:  ${NGINX_CONF_FILE}"
+if [ -n "${STREAM_CONF_FILE}" ]; then
+    echo -e "  - Regla SNI L4:    ${STREAM_MAP_FILE}"
+    echo -e "  - Terminador L4:   ${STREAM_CONF_FILE} (Loopback interno: 127.0.0.1:${STREAM_INTERNAL_PORT})"
 fi
 
-echo -e "\n${BOLD}Rutas públicas habilitadas:${NC}"
-echo -e "  - Web / API:  ${CYAN}https://${PROJECT_DOMAIN}${NC} y ${CYAN}https://*.${PROJECT_DOMAIN}${NC}  --> http://${PEER_IP}:80"
-if [ -n "${STREAM_PORT}" ]; then
-    echo -e "  - Stream TCP: ${CYAN}${VPS_ENDPOINT_HOST}:${STREAM_PORT}${NC} (TLS)                  --> ${PEER_IP}:${STREAM_INTERNAL_PORT}"
+echo -e "\n${BOLD}Rutas públicas habilitadas (¡Todas unificadas en puerto 80 / 443!):${NC}"
+echo -e "  - Web / API:   ${CYAN}https://${PROJECT_DOMAIN}${NC} y ${CYAN}https://*.${PROJECT_DOMAIN}${NC}  --> http://${PEER_IP}:80"
+if [ -n "${STREAM_CONF_FILE}" ]; then
+    echo -e "  - TCP con TLS: ${CYAN}${TCP_SUBDOMAIN}:443${NC} (MQTTS/gRPC/etc. con SNI)  --> ${PEER_IP}:${STREAM_REMOTE_PORT}"
 fi
 
 echo -e "\n${YELLOW}${BOLD}------------------------------------------------------------------------${NC}"

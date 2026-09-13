@@ -1,16 +1,16 @@
 # ==============================================================================
-# Ingress Proxy Layer 4 (Stream): Servicio TCP con Terminación TLS (proyecto1)
+# Terminador TLS Interno (Layer 4 Stream): proyecto1
+# Despachado por el Universal SNI Multiplexer desde el puerto público 443
 # ==============================================================================
-# Escucha tráfico TCP con cifrado TLS en el puerto público especificado (ej. 8883)
-# y lo reenvía desencriptado hacia el puerto interno TCP del proyecto (ej. 1883)
-# a través del túnel WireGuard (10.10.1.2).
-#
-# Aplica para: Brokers MQTT (MQTTS), Bases de Datos (PostgreSQL, MySQL),
-# APIs binarias, gRPC o protocolos TCP personalizados.
+# Este servidor escucha internamente en 127.0.0.1:10001 (NUNCA expuesto directo
+# a Internet). Recibe las conexiones TLS para 'tcp.dominio-proyecto1.com' o
+# 'mqtt.dominio-proyecto1.com', realiza la terminación TLS con Let's Encrypt
+# y reenvía el flujo TCP desencriptado hacia el puerto interno del proyecto
+# (10.10.1.2:1883) a través del túnel WireGuard.
 # ==============================================================================
 
 server {
-    listen 8883 ssl;
+    listen 127.0.0.1:10001 ssl;
 
     # Certificados TLS emitidos para el dominio de este proyecto
     ssl_certificate     /etc/letsencrypt/live/dominio-proyecto1.com/fullchain.pem;
@@ -29,4 +29,3 @@ server {
     # Reenvío a través del túnel WireGuard hacia el servicio TCP interno de proyecto1
     proxy_pass 10.10.1.2:1883;
 }
-

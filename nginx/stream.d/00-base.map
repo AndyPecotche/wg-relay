@@ -1,0 +1,6 @@
+# ==============================================================================
+# Mapeo Base SNI Preread (Layer 4 -> Layer 7)
+# ==============================================================================
+# Este archivo garantiza que el include /etc/nginx/stream.d/*.map siempre encuentre
+# al menos un archivo válido en el contenedor.
+# ==============================================================================
