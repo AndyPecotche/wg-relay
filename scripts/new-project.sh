@@ -363,9 +363,18 @@ fi
 # ------------------------------------------------------------------------------
 SERVER_PUBKEY=""
 SERVER_PUB_FILE="${REPO_ROOT}/wireguard/config/server.pub"
-if [ -f "${SERVER_PUB_FILE}" ]; then
-    SERVER_PUBKEY=$(cat "${SERVER_PUB_FILE}" | tr -d '\r\n ')
-else
+
+if docker compose -f "${REPO_ROOT}/docker-compose.yml" ps --status running --format json 2>/dev/null | grep -q "wireguard"; then
+    SERVER_PUBKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard wg show wg0 public-key 2>/dev/null | tr -d '\r\n ' || true)
+fi
+
+if [ -z "${SERVER_PUBKEY}" ]; then
+    if [ -f "${SERVER_PUB_FILE}" ]; then
+        SERVER_PUBKEY=$(cat "${SERVER_PUB_FILE}" 2>/dev/null | tr -d '\r\n ' || true)
+    fi
+fi
+
+if [ -z "${SERVER_PUBKEY}" ]; then
     SERVER_PUBKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard cat /config/server.pub 2>/dev/null | tr -d '\r\n ' || echo "CLAVE_PUBLICA_DEL_VPS")
 fi
 

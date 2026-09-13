@@ -7,21 +7,37 @@ set -euo pipefail
 TEMPLATES_DIR="${TEMPLATES_DIR:-/templates}"
 PEERS_DIR="${PEERS_DIR:-/peers.d}"
 CONFIG_DIR="${CONFIG_DIR:-/config}"
+WG_CONFS_DIR="${CONFIG_DIR}/wg_confs"
 INTERFACE_TEMPLATE="${TEMPLATES_DIR}/interface.conf"
-OUTPUT_CONF="${CONFIG_DIR}/wg0.conf"
-TEMP_CONF="${CONFIG_DIR}/wg0.conf.tmp"
+OUTPUT_CONF="${WG_CONFS_DIR}/wg0.conf"
+TEMP_CONF="${WG_CONFS_DIR}/wg0.conf.tmp"
 SERVER_KEY="${CONFIG_DIR}/server.key"
 SERVER_PUB="${CONFIG_DIR}/server.pub"
+
+mkdir -p "${WG_CONFS_DIR}"
 
 echo "=== [WireGuard Modular Assembler] Iniciando compilación ==="
 
 # 1. Asegurar la existencia de las llaves del servidor Relay
 if [ ! -f "${SERVER_KEY}" ]; then
-    echo "[+] Generando nuevo par de claves para el servidor Relay..."
-    wg genkey > "${SERVER_KEY}"
-    chmod 600 "${SERVER_KEY}"
-    wg pubkey < "${SERVER_KEY}" > "${SERVER_PUB}"
-    echo "[✓] Clave privada y pública creadas en ${CONFIG_DIR}."
+    if [ -f "${CONFIG_DIR}/server/privatekey-server" ]; then
+        echo "[+] Migrando clave privada existente desde server/privatekey-server..."
+        cp "${CONFIG_DIR}/server/privatekey-server" "${SERVER_KEY}"
+        chmod 600 "${SERVER_KEY}"
+        wg pubkey < "${SERVER_KEY}" > "${SERVER_PUB}"
+        chmod 644 "${SERVER_PUB}"
+        echo "[✓] Clave migrada a ${SERVER_KEY}."
+    else
+        echo "[+] Generando nuevo par de claves para el servidor Relay..."
+        wg genkey > "${SERVER_KEY}"
+        chmod 600 "${SERVER_KEY}"
+        wg pubkey < "${SERVER_KEY}" > "${SERVER_PUB}"
+        chmod 644 "${SERVER_PUB}"
+        echo "[✓] Clave privada y pública creadas en ${CONFIG_DIR}."
+    fi
+else
+    # Asegurar permisos de lectura en la clave pública
+    [ -f "${SERVER_PUB}" ] && chmod 644 "${SERVER_PUB}" 2>/dev/null || true
 fi
 
 SERVER_PRIVATE_KEY=$(cat "${SERVER_KEY}" | tr -d '\r\n ')

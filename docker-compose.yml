@@ -16,9 +16,6 @@ services:
       - TZ=${TZ:-UTC}
       - SERVERURL=${VPS_ENDPOINT_HOST:-auto}
       - SERVERPORT=${VPN_PORT:-51820}
-      - PEERS=0
-      - PEERDNS=auto
-      - INTERNAL_SUBNET=${VPN_SUBNET:-10.10.0.0/16}
     volumes:
       # Almacenamiento persistente de claves e interfaces generadas
       - ./wireguard/config:/config
