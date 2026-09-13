@@ -1,0 +1,12 @@
+# Preservar saltos de línea LF (estándar Unix/Linux)
+* text=auto eol=lf
+
+# Scripts ejecutables
+*.sh text eol=lf
+
+# Archivos de configuración
+*.conf text eol=lf
+*.ini text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.example text eol=lf

@@ -1,0 +1,21 @@
+[Peer]
+# ==============================================================================
+# Proyecto: SensorHub (Edge Gateway en red privada local bajo CGNAT)
+# ==============================================================================
+# Clave pública del cliente remoto WireGuard (generada en el cliente con `wg genkey | wg pubkey`):
+PublicKey = CLAVE_PUBLICA_DEL_PEER_SENSORHUB_BASE64=
+
+# IP asignada exclusivamente a este peer en la red WireGuard:
+AllowedIPs = 10.10.1.2/32
+
+# NOTA IMPORTANTE PARA EL CLIENTE (Edge Gateway / SensorHub):
+# En el archivo wg0.conf del cliente remoto se debe configurar:
+# [Interface]
+# PrivateKey = <ClavePrivadaCliente>
+# Address = 10.10.1.2/16
+#
+# [Peer]
+# PublicKey = <ClavePublicaServidorVPS>
+# Endpoint = vps.tudominio.com:51820
+# AllowedIPs = 10.10.0.0/16
+# PersistentKeepalive = 25   <-- CRÍTICO: Mantiene abierto el túnel saliente a través del CGNAT

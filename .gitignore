@@ -1,0 +1,29 @@
+# Entornos y Secretos
+.env
+certbot/cloudflare.ini
+
+# Certificados y logs generados por Certbot
+certbot/conf/
+certbot/logs/
+
+# Configuraciones generadas y llaves privadas de WireGuard
+wireguard/config/
+
+# Peers activos (mantener solo ejemplos .example en git)
+wireguard/peers.d/*.conf
+!wireguard/peers.d/*.example
+
+# Virtualhosts activos de Nginx (mantener solo ejemplos .example en git)
+nginx/conf.d/*.conf
+!nginx/conf.d/*.example
+nginx/stream.d/*.conf
+!nginx/stream.d/*.example
+
+# Archivos de sistema y editores
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~
+.idea/
+.vscode/

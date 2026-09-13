@@ -1,0 +1,66 @@
+# ==============================================================================
+# Virtual Host L7: SensorHub Web Dashboard / API
+# Redirige el tráfico público a través del túnel WireGuard hacia la IP 10.10.1.2:80
+# ==============================================================================
+
+# Redirección global HTTP (Puerto 80) -> HTTPS (Puerto 443)
+server {
+    listen 80;
+    server_name sensorhub.tudominio.com;
+
+    # Permitir validaciones HTTP-01 si fueran necesarias en el futuro
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# Servidor Seguro HTTPS (Puerto 443)
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name sensorhub.tudominio.com;
+
+    # Certificados Wildcard gestionados por Certbot (DNS-01 Cloudflare)
+    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+
+    # Cabeceras de Seguridad recomendadas
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    # Límite de carga (subida de archivos/payloads)
+    client_max_body_size 64M;
+
+    # Proxy Inverso hacia el peer WireGuard del proyecto SensorHub
+    location / {
+        proxy_pass http://10.10.1.2:80;
+
+        # Cabeceras estándar para preservar contexto del cliente
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        # Timeouts de proxy
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        # Búferes de respuesta
+        proxy_buffering on;
+        proxy_buffer_size 8k;
+        proxy_buffers 8 8k;
+    }
+}

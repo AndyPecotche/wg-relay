@@ -1,0 +1,13 @@
+# ==============================================================================
+# Credenciales de API de Cloudflare para el plugin certbot-dns-cloudflare
+# ==============================================================================
+# Instrucciones para generar el Token en Cloudflare Dashboard:
+# 1. Ve a: My Profile -> API Tokens -> Create Token.
+# 2. Usa la plantilla "Edit zone DNS" o crea un Custom Token con:
+#    - Permissions: Zone -> DNS -> Edit
+#    - Zone Resources: Include -> Specific zone -> tu_dominio.com (o All zones)
+# 3. Guarda el token resultante y pégalo abajo reemplazando el valor de ejemplo.
+# 4. Asegura los permisos de este archivo: chmod 600 certbot/cloudflare.ini
+# ==============================================================================
+
+dns_cloudflare_api_token = 0123456789abcdef0123456789abcdef01234567

@@ -1,0 +1,111 @@
+services:
+  # ----------------------------------------------------------------------------
+  # Servicio 1: WireGuard VPN Hub / Gateway
+  # ----------------------------------------------------------------------------
+  wireguard:
+    image: linuxserver/wireguard:latest
+    container_name: wg-relay-wireguard
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-UTC}
+      - SERVERURL=${BASE_DOMAIN}
+      - SERVERPORT=${VPN_PORT:-51820}
+      - PEERS=0
+      - PEERDNS=auto
+      - INTERNAL_SUBNET=${VPN_SUBNET:-10.10.0.0/16}
+    volumes:
+      # Almacenamiento persistente de claves e interfaces generadas
+      - ./wireguard/config:/config
+      # Plantilla base y peers modulares
+      - ./wireguard/templates:/templates:ro
+      - ./wireguard/peers.d:/peers.d:ro
+      # Script de ensamblado montado como cont-init (se ejecuta antes de que inicie WG)
+      # y disponible en el PATH para recargas en caliente
+      - ./wireguard/assemble.sh:/custom-cont-init.d/01-assemble:ro
+      - ./wireguard/assemble.sh:/usr/local/bin/assemble.sh:ro
+      # Soporte de módulos kernel del host
+      - /lib/modules:/lib/modules:ro
+    ports:
+      - "${VPN_PORT:-51820}:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    networks:
+      relay_net:
+        ipv4_address: ${WIREGUARD_CONTAINER_IP:-172.28.0.2}
+
+  # ----------------------------------------------------------------------------
+  # Servicio 2: Nginx Reverse Proxy (L7 HTTP/HTTPS + L4 TCP Stream/TLS)
+  # ----------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: wg-relay-nginx
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    # Entrypoint que inyecta la ruta hacia la subred VPN vía WireGuard antes de arrancar Nginx
+    entrypoint: >
+      /bin/sh -c "
+        ip route replace ${VPN_SUBNET:-10.10.0.0/16} via ${WIREGUARD_CONTAINER_IP:-172.28.0.2} dev eth0 &&
+        exec nginx -g 'daemon off;'
+      "
+    ports:
+      - "80:80"       # HTTP Ingress (Redirect to HTTPS)
+      - "443:443"     # HTTPS Ingress (L7 Reverse Proxy)
+      - "1883:1883"   # MQTT Raw Ingress (Opcional L4 Stream)
+      - "8883:8883"   # MQTTS TLS Ingress (L4 Stream con terminación SSL)
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/stream.d:/etc/nginx/stream.d:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+    depends_on:
+      - wireguard
+    networks:
+      relay_net:
+        ipv4_address: ${NGINX_CONTAINER_IP:-172.28.0.10}
+
+  # ----------------------------------------------------------------------------
+  # Servicio 3: Certbot Daemon (Renovación Automática DNS-01 Cloudflare)
+  # ----------------------------------------------------------------------------
+  certbot:
+    image: certbot/dns-cloudflare:latest
+    container_name: wg-relay-certbot
+    restart: unless-stopped
+    # Bucle infinito para verificar y renovar certificados cada 12 horas
+    entrypoint: >
+      /bin/sh -c "
+        trap exit TERM;
+        while :; do
+          if [ -f /etc/letsencrypt/cloudflare.ini ]; then
+            certbot renew \
+              --dns-cloudflare \
+              --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+              --quiet;
+          fi
+          sleep 12h & wait $${!};
+        done;
+      "
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/logs:/var/log/letsencrypt
+      - ./certbot/cloudflare.ini:/etc/letsencrypt/cloudflare.ini:ro
+    networks:
+      relay_net:
+        ipv4_address: ${CERTBOT_CONTAINER_IP:-172.28.0.20}
+
+# ------------------------------------------------------------------------------
+# Red Bridge Estática Interna
+# ------------------------------------------------------------------------------
+networks:
+  relay_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: ${DOCKER_SUBNET:-172.28.0.0/16}
