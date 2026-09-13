@@ -81,15 +81,44 @@ echo -e "\n${CYAN}[i] Proyecto:${NC} ${BOLD}${PROJECT_NAME}${NC}"
 echo -e "${CYAN}[i] Dominio:${NC}  ${BOLD}${PROJECT_DOMAIN}${NC} (y comodín *.${PROJECT_DOMAIN})"
 
 # ------------------------------------------------------------------------------
-# 2. Algoritmo de Auto-asignación de IP VPN (10.10.x.y)
+# Funciones Auxiliares
 # ------------------------------------------------------------------------------
+get_server_pubkey() {
+    local key=""
+    local pub_file="${REPO_ROOT}/wireguard/config/server.pub"
+    if docker compose -f "${REPO_ROOT}/docker-compose.yml" ps --status running --format json 2>/dev/null | grep -q "wireguard"; then
+        key=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard wg show wg0 public-key 2>/dev/null | tr -d '\r\n ' || true)
+    fi
+    if [ -z "${key}" ] && [ -f "${pub_file}" ]; then
+        key=$(cat "${pub_file}" 2>/dev/null | tr -d '\r\n ' || true)
+    fi
+    if [ -z "${key}" ]; then
+        key=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard cat /config/server.pub 2>/dev/null | tr -d '\r\n ' || echo "CLAVE_PUBLICA_DEL_VPS")
+    fi
+    echo "${key}"
+}
+
+check_cert_exists() {
+    local domain="$1"
+    if [ -f "${CERT_LIVE_DIR}/${domain}/fullchain.pem" ]; then
+        return 0
+    fi
+    # Comprobar dentro del contenedor si en el host falla por permisos de root (0700)
+    if docker compose -f "${REPO_ROOT}/docker-compose.yml" ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
+        docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T certbot /bin/sh -c "test -f /etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
+    else
+        docker compose -f "${REPO_ROOT}/docker-compose.yml" run --rm --entrypoint /bin/sh certbot -c "test -f /etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 find_next_vpn_ip() {
-    # Recolectar todas las IPs ya asignadas en peers.d y conf.d
+    # Recolectar todas las IPs ya asignadas en peers.d, conf.d y stream.d (incluyendo .disabled)
     local assigned_ips
-    assigned_ips=$(find "${PEERS_DIR}" "${CONF_DIR}" -type f -name "*.conf" 2>/dev/null | \
+    assigned_ips=$(find "${PEERS_DIR}" "${CONF_DIR}" "${STREAM_DIR}" -type f \( -name "*.conf" -o -name "*.conf.disabled" -o -name "*.map" -o -name "*.map.disabled" \) 2>/dev/null | \
                    xargs grep -rhoE '10\.10\.[0-9]+\.[0-9]+' 2>/dev/null || true)
     local file_ips
-    file_ips=$(find "${PEERS_DIR}" "${CONF_DIR}" -type f -name "10.10.*" 2>/dev/null | \
+    file_ips=$(find "${PEERS_DIR}" "${CONF_DIR}" "${STREAM_DIR}" -type f -name "10.10.*" 2>/dev/null | \
                sed -n 's/.*\(10\.10\.[0-9]\+\.[0-9]\+\).*/\1/p' || true)
     
     local all_ips="${assigned_ips} ${file_ips} ${VPN_GATEWAY_IP}"
@@ -107,7 +136,111 @@ find_next_vpn_ip() {
     return 1
 }
 
-AUTO_IP=$(find_next_vpn_ip)
+# ------------------------------------------------------------------------------
+# 2. Comprobación de Existencia de Proyecto / Dominio Previo
+# ------------------------------------------------------------------------------
+EXISTING_PEER_FILE=$(find "${PEERS_DIR}" -type f \( -name "*-${PROJECT_NAME}.conf" -o -name "*-${PROJECT_NAME}.conf.disabled" \) 2>/dev/null | head -n 1 || true)
+EXISTING_CONF_FILE=$(find "${CONF_DIR}" -type f \( -name "*-${PROJECT_DOMAIN}.conf" -o -name "*-${PROJECT_DOMAIN}.conf.disabled" \) 2>/dev/null | head -n 1 || true)
+EXISTING_STREAM_MAP=$(find "${STREAM_DIR}" -type f \( -name "*-${PROJECT_DOMAIN}.map" -o -name "*-${PROJECT_DOMAIN}.map.disabled" \) 2>/dev/null | head -n 1 || true)
+EXISTING_STREAM_CONF=$(find "${STREAM_DIR}" -type f \( -name "*-${PROJECT_DOMAIN}.conf" -o -name "*-${PROJECT_DOMAIN}.conf.disabled" \) 2>/dev/null | head -n 1 || true)
+
+ANY_EXISTING="${EXISTING_PEER_FILE:-${EXISTING_CONF_FILE:-${EXISTING_STREAM_MAP:-$EXISTING_STREAM_CONF}}}"
+PRESET_IP=""
+
+if [ -n "${ANY_EXISTING}" ]; then
+    EXISTING_IP=$(echo "${ANY_EXISTING}" | grep -oE '10\.10\.[0-9]+\.[0-9]+' | head -n 1 || true)
+    PRESET_IP="${EXISTING_IP}"
+    
+    # Recolectar archivos .disabled asociados a este proyecto/dominio
+    DISABLED_FILES=()
+    for df in "${CONF_DIR}/${EXISTING_IP}-${PROJECT_DOMAIN}.conf.disabled" \
+              "${STREAM_DIR}/${EXISTING_IP}-${PROJECT_DOMAIN}.map.disabled" \
+              "${STREAM_DIR}/${EXISTING_IP}-${PROJECT_DOMAIN}.conf.disabled" \
+              "${PEERS_DIR}/${EXISTING_IP}-${PROJECT_NAME}.conf.disabled"; do
+        [ -f "${df}" ] && DISABLED_FILES+=("${df}")
+    done
+
+    if [ ${#DISABLED_FILES[@]} -gt 0 ]; then
+        echo -e "\n${YELLOW}[!] AVISO: El proyecto '${PROJECT_NAME}' ya existe asignado a la IP ${BOLD}${EXISTING_IP}${NC}${YELLOW},"
+        echo -e "    pero cuenta con archivos desactivados (.disabled):${NC}"
+        for df in "${DISABLED_FILES[@]}"; do
+            echo -e "    - $(basename "${df}")"
+        done
+
+        echo -e "\n${CYAN}[+] Verificando certificado SSL para '${PROJECT_DOMAIN}'...${NC}"
+        if ! check_cert_exists "${PROJECT_DOMAIN}"; then
+            echo -e "${YELLOW}[!] Aún no existe certificado TLS para '${PROJECT_DOMAIN}'.${NC}"
+            read -r -p "¿Deseas solicitar el certificado wildcard a Cloudflare ahora? (S/n): " RUN_CERT
+            if [[ ! "$RUN_CERT" =~ ^([nN][oO]|[nN])$ ]]; then
+                "${REPO_ROOT}/certbot/init-cert.sh" "${PROJECT_DOMAIN}" || true
+            fi
+        fi
+
+        if check_cert_exists "${PROJECT_DOMAIN}"; then
+            echo -e "${GREEN}[✓] Certificado SSL verificado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
+            read -r -p "¿Deseas habilitar y activar los archivos .disabled ahora mismo? (S/n): " ENABLE_FILES
+            if [[ ! "$ENABLE_FILES" =~ ^([nN][oO]|[nN])$ ]]; then
+                for df in "${DISABLED_FILES[@]}"; do
+                    target="${df%.disabled}"
+                    mv "${df}" "${target}"
+                    echo -e "  ${GREEN}[✓] Activado:${NC} $(basename "${target}")"
+                done
+                echo -e "\n${BLUE}[+] Sincronizando y recargando servicios...${NC}"
+                "${REPO_ROOT}/scripts/reload.sh"
+                
+                SERVER_PUBKEY=$(get_server_pubkey)
+                echo -e "\n${GREEN}========================================================================${NC}"
+                echo -e "${GREEN}${BOLD} ¡PROYECTO '${PROJECT_NAME}' HABILITADO Y ACTIVO CON ÉXITO! ${NC}"
+                echo -e "${GREEN}========================================================================${NC}"
+                echo -e "IP VPN: ${EXISTING_IP}"
+                echo -e "Web:    https://${PROJECT_DOMAIN} y https://*.${PROJECT_DOMAIN} -> http://${EXISTING_IP}:80"
+                if [ -f "${STREAM_DIR}/${EXISTING_IP}-${PROJECT_DOMAIN}.map" ]; then
+                    echo -e "TCP L4: https://*.${PROJECT_DOMAIN}:443 (SNI) -> ${EXISTING_IP}"
+                fi
+                echo -e "\n${YELLOW}Clave pública del Relay VPS: ${SERVER_PUBKEY}${NC}\n"
+                exit 0
+            fi
+        else
+            echo -e "${RED}[!] El certificado SSL aún no está listo. Los archivos permanecen como .disabled.${NC}"
+            exit 1
+        fi
+    else
+        # El proyecto ya está completamente activo
+        echo -e "\n${YELLOW}[!] AVISO: El proyecto '${PROJECT_NAME}' (dominio '${PROJECT_DOMAIN}') ya se encuentra"
+        echo -e "    registrado y activo con la IP ${BOLD}${EXISTING_IP}${NC}${YELLOW}.${NC}"
+        read -r -p "¿Deseas ver la configuración activa para el cliente WireGuard? (S/n): " SHOW_CFG
+        if [[ ! "$SHOW_CFG" =~ ^([nN][oO]|[nN])$ ]]; then
+            SERVER_PUBKEY=$(get_server_pubkey)
+            echo -e "\n${YELLOW}------------------------------------------------------------------------${NC}"
+            echo -e "${YELLOW} Configuración del Cliente Remoto: ${NC}"
+            echo -e "${YELLOW}------------------------------------------------------------------------${NC}"
+            echo -e "[Interface]"
+            echo -e "Address = ${EXISTING_IP}/16"
+            echo -e ""
+            echo -e "[Peer]"
+            echo -e "PublicKey = ${SERVER_PUBKEY}"
+            echo -e "Endpoint = ${VPS_ENDPOINT_HOST}:${VPN_PORT}"
+            echo -e "AllowedIPs = 10.10.0.0/16"
+            echo -e "PersistentKeepalive = 25"
+            echo -e "${YELLOW}------------------------------------------------------------------------${NC}\n"
+        fi
+        read -r -p "¿Deseas sobreescribir / reconfigurar este proyecto? (s/N): " RECONF
+        if [[ ! "$RECONF" =~ ^([sS][iI]|[sS])$ ]]; then
+            echo "Operación cancelada."
+            exit 0
+        fi
+    fi
+fi
+
+# ------------------------------------------------------------------------------
+# 3. Algoritmo de Asignación de IP VPN (10.10.x.y)
+# ------------------------------------------------------------------------------
+if [ -n "${PRESET_IP}" ]; then
+    AUTO_IP="${PRESET_IP}"
+else
+    AUTO_IP=$(find_next_vpn_ip)
+fi
+
 echo -e "${GREEN}[+] IP disponible detectada:${NC} ${BOLD}${AUTO_IP}${NC}"
 read -r -p "Presiona Enter para usar ${AUTO_IP} o ingresa una IP diferente: " CUSTOM_IP
 PEER_IP="${CUSTOM_IP:-${AUTO_IP}}"
@@ -119,14 +252,13 @@ if [[ ! "${PEER_IP}" =~ ^10\.10\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
 fi
 
 # ------------------------------------------------------------------------------
-# 3. Generación de Claves WireGuard y Archivo de Peer
+# 4. Generación de Claves WireGuard y Archivo de Peer
 # ------------------------------------------------------------------------------
 mkdir -p "${PEERS_DIR}"
 PEER_FILE="${PEERS_DIR}/${PEER_IP}-${PROJECT_NAME}.conf"
 
 if [ -f "${PEER_FILE}" ]; then
-    echo -e "${RED}[!] ERROR: Ya existe un archivo de peer en ${PEER_FILE}.${NC}" >&2
-    exit 1
+    echo -e "${YELLOW}[i] Ya existía un peer previo en ${PEER_FILE}. Se actualizará.${NC}"
 fi
 
 echo -e "${CYAN}[+] Generando par de claves WireGuard para el cliente...${NC}"
@@ -152,22 +284,8 @@ chmod 600 "${PEER_FILE}"
 echo -e "${GREEN}[✓] Peer WireGuard creado:${NC} ${PEER_FILE}"
 
 # ------------------------------------------------------------------------------
-# 4. Comprobación y Emisión de Certificados SSL (Antes de Nginx)
+# 5. Comprobación y Emisión de Certificados SSL (Antes de Nginx)
 # ------------------------------------------------------------------------------
-check_cert_exists() {
-    local domain="$1"
-    if [ -f "${CERT_LIVE_DIR}/${domain}/fullchain.pem" ]; then
-        return 0
-    fi
-    # Comprobar dentro del contenedor si en el host falla por permisos de root (0700)
-    if docker compose -f "${REPO_ROOT}/docker-compose.yml" ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
-        docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T certbot test -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
-    else
-        docker compose -f "${REPO_ROOT}/docker-compose.yml" run --rm --entrypoint test certbot -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
-    fi
-    return 1
-}
-
 echo -e "\n${CYAN}[+] Comprobando certificado SSL para '${PROJECT_DOMAIN}'...${NC}"
 if ! check_cert_exists "${PROJECT_DOMAIN}"; then
     echo -e "${YELLOW}[!] AVISO: Aún no existe un certificado TLS para '${PROJECT_DOMAIN}'.${NC}"
@@ -185,7 +303,7 @@ MAP_EXT=".map"
 if check_cert_exists "${PROJECT_DOMAIN}"; then
     HAS_SSL_CERT=true
     echo -e "${GREEN}[✓] Certificado SSL activo verificado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
-    # Si existían archivos .disabled anteriores de un intento previo, activarlos
+    # Si existían archivos .disabled anteriores de un intento previo, activarlos o limpiarlos
     rm -f "${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled" \
           "${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map.disabled" \
           "${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled" 2>/dev/null || true
