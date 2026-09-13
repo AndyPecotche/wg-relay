@@ -10,7 +10,7 @@ Esta carpeta contiene la arquitectura recomendada para correr en el servidor, mi
 Internet (HTTPS)
        │
        ▼
-   VPS Relay (Termina TLS con Wildcard *.tudominio.com)
+   VPS Relay (Termina TLS para el dominio propio de cada proyecto)
        │
        ▼ (Túnel WireGuard UDP 51820)
        │
@@ -22,8 +22,8 @@ Internet (HTTPS)
 │          │ (Comparte red con network_mode: service:wireguard-client)          │
 │          ▼                                                                    │
 │  [nginx-local] (Escucha en 10.10.1.2:80)                                      │
-│          ├── proyecto1.tudominio.com      ──► [app-web] (172.30.0.10:80)      │
-│          └── api.proyecto1.tudominio.com  ──► [app-api] (172.30.0.11:80)      │
+│          ├── dominio-proyecto1.com      ──► [app-web] (172.30.0.10:80)        │
+│          └── api.dominio-proyecto1.com  ──► [app-api] (172.30.0.11:80)        │
 └───────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -32,15 +32,19 @@ Internet (HTTPS)
 ## Instrucciones de Uso
 
 1. **En el VPS Relay:**
-   Registra el nuevo proyecto:
-   ```bash
-   ./scripts/add-peer.sh proyecto1 10.10.1.2
-   ```
-   Copia la plantilla Ingress en el VPS:
-   ```bash
-   cp nginx/conf.d/proyecto1.conf.example nginx/conf.d/proyecto1.conf
-   ./scripts/reload.sh
-   ```
+   - Registra el nuevo proyecto en WireGuard:
+     ```bash
+     ./scripts/add-peer.sh proyecto1 10.10.1.2
+     ```
+   - Emite el certificado Wildcard para el dominio propio de este proyecto:
+     ```bash
+     ./certbot/init-cert.sh dominio-proyecto1.com
+     ```
+   - Copia la plantilla Ingress en el VPS y ajusta el dominio:
+     ```bash
+     cp nginx/conf.d/proyecto1.conf.example nginx/conf.d/proyecto1.conf
+     ./scripts/reload.sh
+     ```
    *¡Listo! Ya no tienes que tocar el VPS nunca más para este proyecto.*
 
 2. **En tu máquina o servidor local (`proyecto1`):**
@@ -60,7 +64,7 @@ Internet (HTTPS)
 
 5. **Sumar nuevos microservicios en el futuro:**
    - Agrega tu nuevo contenedor en `docker-compose.yml` (ej. `grafana`).
-   - Agrega un bloque `server` en `nginx/conf.d/default.conf` para `grafana.proyecto1.tudominio.com`.
+   - Agrega un bloque `server` en `nginx/conf.d/default.conf` para `grafana.dominio-proyecto1.com`.
    - Ejecuta `docker compose restart nginx-local`.
-   - **No tocas el VPS.** La regla comodín `*.proyecto1.tudominio.com` del VPS ya te envía todo el tráfico automáticamente.
+   - **No tocas el VPS.** La regla comodín `*.dominio-proyecto1.com` del VPS ya te envía todo el tráfico automáticamente.
 

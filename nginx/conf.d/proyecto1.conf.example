@@ -1,18 +1,18 @@
 # ==============================================================================
-# Ingress Gateway L7: proyecto1
+# Ingress Gateway L7: proyecto1 (Dominio Propio Independiente)
 # ==============================================================================
 # Patrón Ingress por Proyecto:
-# Esta es la ÚNICA configuración requerida en el VPS para todo el proyecto.
-# Captura 'proyecto1.tudominio.com' y TODOS sus subdominios ('*.proyecto1.tudominio.com')
-# y reenvía el tráfico hacia el Nginx local de proyecto1 (10.10.1.2:80).
-# Luego, el Nginx local de tu proyecto se encarga de repartir internamente a
-# tus microservicios (api, dashboard, grafana, etc.) sin volver a tocar el VPS.
+# Cada proyecto puede tener su propio dominio base (ej. dominio-proyecto1.com,
+# cliente2.org, etc.) totalmente independiente de los demás proyectos.
+#
+# Esta configuración captura 'dominio-proyecto1.com' y TODOS sus subdominios
+# ('*.dominio-proyecto1.com') y los reenvía al Nginx local de proyecto1 (10.10.1.2:80).
 # ==============================================================================
 
 # Redirección global HTTP (Puerto 80) -> HTTPS (Puerto 443)
 server {
     listen 80;
-    server_name proyecto1.tudominio.com *.proyecto1.tudominio.com;
+    server_name dominio-proyecto1.com *.dominio-proyecto1.com;
 
     location / {
         return 301 https://$host$request_uri;
@@ -23,12 +23,12 @@ server {
 server {
     listen 443 ssl;
     http2 on;
-    # Acepta el dominio principal del proyecto y cualquier subservicio (ej. api.proyecto1.tudominio.com)
-    server_name proyecto1.tudominio.com *.proyecto1.tudominio.com;
+    # Acepta el dominio principal del proyecto y cualquier subservicio (ej. api.dominio-proyecto1.com)
+    server_name dominio-proyecto1.com *.dominio-proyecto1.com;
 
-    # Certificados Wildcard gestionados por Certbot (DNS-01 Cloudflare)
-    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+    # Certificados independientes emitidos con: ./certbot/init-cert.sh dominio-proyecto1.com
+    ssl_certificate     /etc/letsencrypt/live/dominio-proyecto1.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dominio-proyecto1.com/privkey.pem;
 
     # Cabeceras de Seguridad
     add_header X-Frame-Options "SAMEORIGIN" always;

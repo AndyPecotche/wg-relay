@@ -1,6 +1,11 @@
 #!/bin/bash
 # ==============================================================================
-# init-cert.sh: Emisión Inicial de Certificados Wildcard DNS-01 con Cloudflare
+# init-cert.sh: Emisión de Certificados Wildcard DNS-01 con Cloudflare
+# ==============================================================================
+# Soporta emisión de certificados independientes para cualquier dominio.
+# Uso: ./init-cert.sh [dominio] [archivo_cloudflare.ini_opcional]
+# Ejemplo: ./init-cert.sh proyecto1.com
+#          ./init-cert.sh cliente-externo.org certbot/cloudflare-cliente.ini
 # ==============================================================================
 set -euo pipefail
 
@@ -8,7 +13,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ENV_FILE="${REPO_ROOT}/.env"
-CF_INI="${SCRIPT_DIR}/cloudflare.ini"
 CF_EXAMPLE="${SCRIPT_DIR}/cloudflare.ini.example"
 
 # Colores para la terminal
@@ -16,50 +20,54 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-echo -e "${BLUE}=== [Certbot DNS-01 Cloudflare] Inicialización de Certificados Wildcard ===${NC}"
+echo -e "${BLUE}=== [Certbot DNS-01] Emisión de Certificados Wildcard ===${NC}"
 
-# 1. Cargar variables desde .env
+# 1. Cargar email desde .env si existe
+CERTBOT_EMAIL="admin@example.com"
 if [ -f "${ENV_FILE}" ]; then
     # shellcheck disable=SC2046
     export $(grep -v '^#' "${ENV_FILE}" | xargs)
-else
-    echo -e "${RED}[!] ERROR: No se encontró el archivo ${ENV_FILE}.${NC}"
-    echo "    Copia .env.example a .env y define tus variables."
+fi
+
+# 2. Obtener dominio objetivo (por argumento o interactivo)
+TARGET_DOMAIN="${1:-}"
+if [ -z "${TARGET_DOMAIN}" ]; then
+    read -r -p "Ingresa el dominio base a certificar (ej. proyecto1.com): " TARGET_DOMAIN
+fi
+
+# Sanitizar dominio
+TARGET_DOMAIN=$(echo "${TARGET_DOMAIN}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+TARGET_DOMAIN="${TARGET_DOMAIN#\*.}" # Si el usuario escribió *.dominio.com, quitar *.
+
+if [ -z "${TARGET_DOMAIN}" ]; then
+    echo -e "${RED}[!] ERROR: El nombre de dominio no puede estar vacío.${NC}" >&2
     exit 1
 fi
 
-if [ -z "${BASE_DOMAIN:-}" ] || [ "${BASE_DOMAIN}" = "tudominio.com" ]; then
-    echo -e "${RED}[!] ERROR: BASE_DOMAIN no está configurado correctamente en .env.${NC}"
+# 3. Determinar archivo de credenciales de Cloudflare
+CUSTOM_CF_INI="${2:-${SCRIPT_DIR}/cloudflare.ini}"
+if [ ! -f "${CUSTOM_CF_INI}" ]; then
+    echo -e "${RED}[!] ERROR: No se encuentra el archivo de credenciales ${CUSTOM_CF_INI}.${NC}"
+    echo -e "${YELLOW}[i] Copia ${CF_EXAMPLE} a ${CUSTOM_CF_INI} y define tu API Token de Cloudflare.${NC}"
     exit 1
 fi
 
-if [ -z "${CERTBOT_EMAIL:-}" ] || [ "${CERTBOT_EMAIL}" = "admin@tudominio.com" ]; then
-    echo -e "${RED}[!] ERROR: CERTBOT_EMAIL no está configurado correctamente en .env.${NC}"
+if grep -q "0123456789abcdef0123456789abcdef01234567" "${CUSTOM_CF_INI}"; then
+    echo -e "${RED}[!] ERROR: Debes colocar tu token real de Cloudflare en ${CUSTOM_CF_INI}.${NC}"
     exit 1
 fi
 
-# 2. Validar archivo cloudflare.ini
-if [ ! -f "${CF_INI}" ]; then
-    echo -e "${RED}[!] ERROR: No se encuentra ${CF_INI}.${NC}"
-    echo -e "${YELLOW}[i] Copia ${CF_EXAMPLE} a ${CF_INI} y coloca tu API Token de Cloudflare.${NC}"
-    exit 1
-fi
+# Asegurar permisos estrictos (chmod 600)
+chmod 600 "${CUSTOM_CF_INI}"
+echo -e "${GREEN}[✓] Permisos en credenciales ajustados a 600.${NC}"
 
-if grep -q "0123456789abcdef0123456789abcdef01234567" "${CF_INI}"; then
-    echo -e "${RED}[!] ERROR: Debes reemplazar el token de ejemplo en ${CF_INI} con tu token real.${NC}"
-    exit 1
-fi
-
-# 3. Asegurar permisos estrictos requeridos por certbot-dns-cloudflare (chmod 600)
-chmod 600 "${CF_INI}"
-echo -e "${GREEN}[✓] Permisos en cloudflare.ini ajustados a 600.${NC}"
-
-# 4. Verificar si ya existe certificado emitido
-if [ -d "${SCRIPT_DIR}/conf/live/${BASE_DOMAIN}" ]; then
-    echo -e "${YELLOW}[!] AVISO: Ya existe un certificado para ${BASE_DOMAIN} en certbot/conf/live/${BASE_DOMAIN}.${NC}"
-    read -r -p "¿Deseas forzar la renovación/re-emisión? (s/N): " response
+# 4. Verificar si ya existe certificado emitido para este dominio
+if [ -d "${SCRIPT_DIR}/conf/live/${TARGET_DOMAIN}" ]; then
+    echo -e "${YELLOW}[!] AVISO: Ya existe un certificado para '${TARGET_DOMAIN}' en certbot/conf/live/${TARGET_DOMAIN}.${NC}"
+    read -r -p "¿Deseas forzar la re-emisión? (s/N): " response
     if [[ ! "$response" =~ ^([sS][iI]|[sS])$ ]]; then
         echo "Operación cancelada."
         exit 0
@@ -67,24 +75,30 @@ if [ -d "${SCRIPT_DIR}/conf/live/${BASE_DOMAIN}" ]; then
 fi
 
 # 5. Ejecutar Certbot vía Docker Compose
-echo -e "${BLUE}[+] Solicitando certificado para '${BASE_DOMAIN}' y '*.${BASE_DOMAIN}' mediante DNS-01...${NC}"
+echo -e "${BLUE}[+] Solicitando certificado para '${TARGET_DOMAIN}' y '*.${TARGET_DOMAIN}' mediante DNS-01...${NC}"
+
+# Ruta relativa del archivo ini dentro del volumen /etc/letsencrypt
+CF_MOUNT_PATH="/etc/letsencrypt/cloudflare.ini"
 
 cd "${REPO_ROOT}"
 docker compose run --rm --entrypoint certbot certbot certonly \
     --dns-cloudflare \
-    --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+    --dns-cloudflare-credentials "${CF_MOUNT_PATH}" \
     --dns-cloudflare-propagation-seconds 30 \
-    -d "${BASE_DOMAIN}" \
-    -d "*.${BASE_DOMAIN}" \
+    -d "${TARGET_DOMAIN}" \
+    -d "*.${TARGET_DOMAIN}" \
     --email "${CERTBOT_EMAIL}" \
     --agree-tos \
     --no-eff-email \
     --non-interactive
 
+echo -e "\n${GREEN}========================================================================${NC}"
+echo -e "${GREEN}[✓] ¡Certificados TLS Wildcard generados para '${TARGET_DOMAIN}'!${NC}"
+echo -e "${GREEN}    Ruta Certificado: /etc/letsencrypt/live/${TARGET_DOMAIN}/fullchain.pem${NC}"
+echo -e "${GREEN}    Ruta Clave:       /etc/letsencrypt/live/${TARGET_DOMAIN}/privkey.pem${NC}"
 echo -e "${GREEN}========================================================================${NC}"
-echo -e "${GREEN}[✓] ¡Certificados TLS Wildcard generados exitosamente!${NC}"
-echo -e "${GREEN}    Ruta: certbot/conf/live/${BASE_DOMAIN}/fullchain.pem${NC}"
-echo -e "${GREEN}    Clave: certbot/conf/live/${BASE_DOMAIN}/privkey.pem${NC}"
-echo -e "${GREEN}========================================================================${NC}"
-echo -e "${BLUE}[i] Ya puedes iniciar o recargar Nginx con: docker compose up -d nginx${NC}"
-
+echo -e "${CYAN}[Próximo paso] En tu archivo de Nginx ('nginx/conf.d/<proyecto>.conf'):${NC}"
+echo -e "  server_name ${TARGET_DOMAIN} *.${TARGET_DOMAIN};"
+echo -e "  ssl_certificate     /etc/letsencrypt/live/${TARGET_DOMAIN}/fullchain.pem;"
+echo -e "  ssl_certificate_key /etc/letsencrypt/live/${TARGET_DOMAIN}/privkey.pem;"
+echo -e "  Luego ejecuta: ./scripts/reload.sh\n"

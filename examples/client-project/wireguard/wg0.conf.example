@@ -12,8 +12,8 @@ Address = 10.10.1.2/16
 [Peer]
 # Clave pública del VPS Relay
 PublicKey = REEMPLAZAR_CON_CLAVE_PUBLICA_DEL_VPS
-# Dirección IP pública o dominio de tu VPS Relay y puerto UDP
-Endpoint = vps.tudominio.com:51820
+# Dirección IP pública o hostname de tu VPS Relay y puerto UDP
+Endpoint = IP_PUBLICA_O_HOST_DEL_VPS:51820
 # Permite comunicarse con toda la subred VPN
 AllowedIPs = 10.10.0.0/16
 # Mantiene abierta la tabla de traducción NAT de tu router/ISP (CGNAT)

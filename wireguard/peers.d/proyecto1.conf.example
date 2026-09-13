@@ -16,7 +16,7 @@ AllowedIPs = 10.10.1.2/32
 #
 # [Peer]
 # PublicKey = <ClavePublicaServidorVPS>
-# Endpoint = vps.tudominio.com:51820
+# Endpoint = IP_O_HOST_DEL_VPS:51820
 # AllowedIPs = 10.10.0.0/16
 # PersistentKeepalive = 25   <-- CRÍTICO: Mantiene abierto el túnel saliente a través del CGNAT
 

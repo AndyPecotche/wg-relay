@@ -12,9 +12,9 @@
 server {
     listen 8883 ssl;
 
-    # Certificados TLS Wildcard gestionados por Certbot
-    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+    # Certificados TLS emitidos para el dominio de este proyecto
+    ssl_certificate     /etc/letsencrypt/live/dominio-proyecto1.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dominio-proyecto1.com/privkey.pem;
 
     # Protocolos y Ciphers SSL seguros
     ssl_protocols TLSv1.2 TLSv1.3;

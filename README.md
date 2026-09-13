@@ -26,7 +26,7 @@ flowchart TD
     subgraph Internet ["🌐 Internet Público"]
         ClientWeb["Cliente Web / API (HTTPS :443)"]
         ClientTCP["Cliente TCP / Dispositivo IoT (TCP TLS :8883 / :puerto)"]
-        CF_DNS["Cloudflare DNS (Proxy / Wildcard *.tudominio.com)"]
+        CF_DNS["Cloudflare DNS (Desafíos DNS-01 por Dominio)"]
     end
 
     subgraph VPS ["🖥️ Relay VPS (wg-relay)"]
@@ -161,8 +161,8 @@ nano .env
 
 Ajusta al menos:
 
-- `BASE_DOMAIN`: Tu dominio raíz (ej. `midominio.com`).
-- `CERTBOT_EMAIL`: Tu correo para notificaciones de expiración.
+- `VPS_ENDPOINT_HOST`: La IP pública o nombre de host de tu VPS (ej. `203.0.113.1` o `vps.tuempresa.com`), usada por los clientes WireGuard para conectarse.
+- `CERTBOT_EMAIL`: Tu correo para notificaciones de expiración de Let's Encrypt.
 
 ### Paso 3: Configurar Credenciales de Cloudflare
 
@@ -171,7 +171,7 @@ Crea un **API Token** en Cloudflare:
 1. Dirígete a [Cloudflare Dashboard -> My Profile -> API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 2. Haz clic en **Create Token** -> **Create Custom Token**.
 3. Permisos: `Zone` -> `DNS` -> `Edit`.
-4. Zone Resources: `Include` -> `Specific zone` -> `tu_dominio.com`.
+4. Zone Resources: `Include` -> `All zones` (o selecciona las zonas de tus proyectos).
 5. Copia el token generado y configúralo:
 
 ```bash
@@ -191,16 +191,16 @@ Asegura permisos estrictos:
 chmod 600 certbot/cloudflare.ini
 ```
 
-### Paso 4: Emitir el Certificado Wildcard Inicial
+### Paso 4: Emitir el Certificado para el Dominio de tu Primer Proyecto
 
-Ejecuta el script automatizado para obtener los certificados `tudominio.com` y `*.tudominio.com` a través del desafío DNS-01:
+Ejecuta el script indicando el dominio específico del proyecto:
 
 ```bash
 chmod +x certbot/init-cert.sh wireguard/assemble.sh scripts/*.sh
-./certbot/init-cert.sh
+./certbot/init-cert.sh dominio-proyecto1.com
 ```
 
-El script verificará el token con Cloudflare, creará el registro TXT temporal `_acme-challenge` y guardará los certificados en `certbot/conf/live/tudominio.com/`.
+El script verificará el token con Cloudflare, creará el registro TXT temporal `_acme-challenge` y guardará los certificados en `certbot/conf/live/dominio-proyecto1.com/` cubriendo tanto `dominio-proyecto1.com` como `*.dominio-proyecto1.com`. Puedes repetir este comando en cualquier momento para agregar nuevos proyectos con dominios totalmente diferentes.
 
 ### Paso 5: Iniciar los Servicios Base
 
@@ -249,7 +249,7 @@ Address = 10.10.1.2/16
 
 [Peer]
 PublicKey = <CLAVE_PUBLICA_DEL_VPS>
-Endpoint = vps.tudominio.com:51820
+Endpoint = <IP_O_HOST_DEL_VPS>:51820
 AllowedIPs = 10.10.0.0/16
 PersistentKeepalive = 25
 ```
@@ -271,7 +271,7 @@ ping 10.10.0.1
 
 ### 3. Exponer el Proyecto en Nginx (1 Sola Entrada en el VPS)
 
-Con este enfoque, en el VPS configuras **una sola entrada por proyecto** delegando todo hacia el Nginx local del proyecto.
+Con este enfoque, en el VPS configuras **una sola entrada por proyecto** delegando todo hacia el Nginx local del proyecto con su propio dominio independiente.
 
 #### Opción A: Ingress Web / HTTP Comodín (L7 HTTP/HTTPS)
 
@@ -281,9 +281,9 @@ Copia la plantilla a un archivo activo `.conf`:
 cp nginx/conf.d/proyecto1.conf.example nginx/conf.d/proyecto1.conf
 ```
 
-Esta plantilla ya incluye la regla comodín:
+Esta plantilla ya incluye la regla comodín para el dominio propio de este proyecto:
 ```nginx
-server_name proyecto1.tudominio.com *.proyecto1.tudominio.com;
+server_name dominio-proyecto1.com *.dominio-proyecto1.com;
 
 location / {
     proxy_pass http://10.10.1.2:80; # Reenvía todo al Nginx local de proyecto1
@@ -291,7 +291,7 @@ location / {
     ...
 }
 ```
-*¡Listo en el VPS! Ahora todos los subdominios de este proyecto (`api.proyecto1...`, `dashboard.proyecto1...`) viajarán automáticamente a tu Nginx local. Consulta la plantilla lista para usar en [`examples/client-project/`](examples/client-project/README.md) para levantar WireGuard + Nginx Local en tu máquina.*
+*¡Listo en el VPS! Ahora todos los subdominios de este proyecto (`api.dominio-proyecto1.com`, `dashboard...`) viajarán automáticamente a tu Nginx local. Consulta la plantilla lista para usar en [`examples/client-project/`](examples/client-project/README.md) para levantar WireGuard + Nginx Local en tu máquina.*
 
 #### Opción B: Exponer Servicio TCP con TLS (L4 Stream TCP - ej. MQTT, DB, Socket)
 
@@ -306,8 +306,8 @@ Configura el puerto de escucha público en el VPS y el reenvío hacia el puerto 
 server {
     listen 8883 ssl; # Puerto público expuesto en el VPS
 
-    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/dominio-proyecto1.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dominio-proyecto1.com/privkey.pem;
 
     # Reenvío hacia el servicio TCP interno del peer remoto
     proxy_pass 10.10.1.2:1883; # Puerto interno en la máquina remota
@@ -350,7 +350,7 @@ PostUp = iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE
 ### ¿Cómo funciona el flujo de paquetes?
 
 1. **Cliente Externo -> Servicio del Proyecto 1:**
-   El usuario o dispositivo se conecta a `https://proyecto1.tudominio.com` o al puerto de su servicio TCP. Nginx (en `172.28.0.10`) procesa el TLS y envía la petición hacia `10.10.1.2`. El kernel del contenedor Nginx sigue la ruta estática hacia la IP de WireGuard (`172.28.0.2`), ingresando a la interfaz `eth0` de WireGuard y reenviándose por el túnel `wg0` hacia el cliente.
+   El usuario o dispositivo se conecta a `https://dominio-proyecto1.com` o al puerto de su servicio TCP. Nginx (en `172.28.0.10`) procesa el TLS y envía la petición hacia `10.10.1.2`. El kernel del contenedor Nginx sigue la ruta estática hacia la IP de WireGuard (`172.28.0.2`), ingresando a la interfaz `eth0` de WireGuard y reenviándose por el túnel `wg0` hacia el cliente.
 2. **Tráfico entre Peers (Proyecto 1: 10.10.1.2 -> Proyecto 2: 10.10.2.2):**
    Si `10.10.1.2` intenta hacer ping o conectarse a `10.10.2.2`, el paquete entra por `wg0` y pretende salir por `wg0`. La regla `FORWARD -i wg0 -o wg0 -j REJECT` descarta y rechaza la conexión de forma inmediata.
 
@@ -363,7 +363,7 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
 ```
                   +--------------------------------+
                   |  Cloudflare DNS / Load Balancer |
-                  |    relay.tudominio.com         |
+                  |    (ej. relay.tuempresa.com)   |
                   +---------------+----------------+
                                   |
                +------------------+------------------+
@@ -392,13 +392,13 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
 2. **Configurar `.env` en VPS 2:**
    Puedes usar una subred VPN separada para evitar conflictos (ej. `VPN_SUBNET=10.20.0.0/16` y `VPN_GATEWAY_IP=10.20.0.1`).
 3. **Obtener Certificados en VPS 2:**
-   Ejecuta `./certbot/init-cert.sh` con el mismo token de Cloudflare.
+   Ejecuta `./certbot/init-cert.sh <dominio>` para cada dominio de tus proyectos.
 4. **Configurar el Cliente Dual en el Edge:**
    En el dispositivo del cliente (ej. Edge Gateway del Proyecto 1), configura dos interfaces WireGuard:
    - `wg0.conf`: Conexión hacia VPS 1 (`10.10.1.2`).
    - `wg1.conf`: Conexión hacia VPS 2 (`10.20.1.2`).
 5. **Configurar Cloudflare:**
-   - **DNS Round Robin:** Agrega dos registros `A` para `*.tudominio.com` apuntando a las IPs públicas de ambos VPS. Cloudflare distribuirá las peticiones entre ambos nodos automáticamente.
+   - **DNS Round Robin:** Agrega dos registros `A` para cada dominio o comodín (ej. `*.dominio-proyecto1.com`) apuntando a las IPs públicas de ambos VPS. Cloudflare distribuirá las peticiones entre ambos nodos automáticamente.
    - **Cloudflare Load Balancer:** Configura un monitor de salud (Health Check) HTTP/HTTPS en el endpoint `/healthz` de Nginx para conmutación por error automática (*Automatic Failover*) en menos de 5 segundos ante caídas de un centro de datos.
 
 ---
@@ -425,10 +425,10 @@ docker compose exec nginx tail -f /var/log/nginx/stream_access.log
 
 ### Forzar renovación de certificados Let's Encrypt
 
+Certbot renueva automáticamente todos los certificados emitidos en segundo plano cada 12 horas. Para forzar una renovación inmediata:
+
 ```bash
-docker compose run --rm certbot certonly --dns-cloudflare \
-  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-  --force-renewal -d "tudominio.com" -d "*.tudominio.com"
+docker compose exec certbot certbot renew --force-renewal
 ./scripts/reload.sh --nginx-only
 ```
 

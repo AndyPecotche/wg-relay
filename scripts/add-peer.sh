@@ -25,7 +25,7 @@ if [ -f "${ENV_FILE}" ]; then
     export $(grep -v '^#' "${ENV_FILE}" | xargs)
 fi
 
-BASE_DOMAIN="${BASE_DOMAIN:-vps.tudominio.com}"
+VPS_ENDPOINT_HOST="${VPS_ENDPOINT_HOST:-TU_IP_O_DOMINIO_DEL_VPS}"
 VPN_PORT="${VPN_PORT:-51820}"
 VPN_GATEWAY_IP="${VPN_GATEWAY_IP:-10.10.0.1}"
 
@@ -130,7 +130,7 @@ Address = ${PEER_IP}/16
 [Peer]
 # VPS Ingress Relay
 PublicKey = ${SERVER_PUBKEY}
-Endpoint = ${BASE_DOMAIN}:${VPN_PORT}
+Endpoint = ${VPS_ENDPOINT_HOST}:${VPN_PORT}
 AllowedIPs = 10.10.0.0/16
 PersistentKeepalive = 25
 EOF
