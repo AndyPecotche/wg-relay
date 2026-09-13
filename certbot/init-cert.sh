@@ -105,6 +105,13 @@ else
         --non-interactive
 fi
 
+# Asegurar que los certificados sean legibles por el usuario host y por Nginx (usuario nginx no-root)
+if docker compose ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
+    docker compose exec -T certbot chmod -R a+rX /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
+else
+    docker compose run --rm --entrypoint chmod certbot -R a+rX /etc/letsencrypt/live /etc/letsencrypt/archive 2>/dev/null || true
+fi
+
 echo -e "\n${GREEN}========================================================================${NC}"
 echo -e "${GREEN}[✓] ¡Certificados TLS Wildcard generados para '${TARGET_DOMAIN}'!${NC}"
 echo -e "${GREEN}    Ruta Certificado: /etc/letsencrypt/live/${TARGET_DOMAIN}/fullchain.pem${NC}"

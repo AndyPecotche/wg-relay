@@ -160,8 +160,10 @@ check_cert_exists() {
         return 0
     fi
     # Comprobar dentro del contenedor si en el host falla por permisos de root (0700)
-    if docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T certbot test -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null; then
-        return 0
+    if docker compose -f "${REPO_ROOT}/docker-compose.yml" ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
+        docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T certbot test -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
+    else
+        docker compose -f "${REPO_ROOT}/docker-compose.yml" run --rm --entrypoint test certbot -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null && return 0
     fi
     return 1
 }
@@ -183,6 +185,10 @@ MAP_EXT=".map"
 if check_cert_exists "${PROJECT_DOMAIN}"; then
     HAS_SSL_CERT=true
     echo -e "${GREEN}[✓] Certificado SSL activo verificado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
+    # Si existían archivos .disabled anteriores de un intento previo, activarlos
+    rm -f "${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled" \
+          "${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map.disabled" \
+          "${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled" 2>/dev/null || true
 else
     echo -e "\n${YELLOW}[!] ADVERTENCIA: Certificado TLS no encontrado para '${PROJECT_DOMAIN}'.${NC}"
     echo -e "${YELLOW}[i] Para proteger Nginx contra errores de sintaxis, los archivos se generarán como '.disabled'.${NC}"
