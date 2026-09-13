@@ -220,6 +220,7 @@ Ejecuta el asistente interactivo:
 ```
 
 El script:
+
 1. Genera un par de claves WireGuard para el cliente si no especificas una.
 2. Crea de forma aislada el archivo `wireguard/peers.d/proyecto1.conf`.
 3. Sincroniza la configuración del kernel (`wg syncconf`) en caliente sin desconectar otros peers ni reiniciar el contenedor.
@@ -247,12 +248,14 @@ PersistentKeepalive = 25
 > [!IMPORTANT]
 > **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
 
-3. Inicia y habilita WireGuard en el cliente:
+1. Inicia y habilita WireGuard en el cliente:
+
 ```bash
 sudo systemctl enable --now wg-quick@wg0
 ```
 
-4. Prueba la conectividad hacia el VPS:
+1. Prueba la conectividad hacia el VPS:
+
 ```bash
 ping 10.10.0.1
 ```
@@ -269,6 +272,7 @@ nano nginx/conf.d/proyecto1_web.conf
 ```
 
 Ajusta el subdominio y el puerto de destino del proyecto:
+
 ```nginx
 server_name proyecto1.tudominio.com;
 
@@ -288,6 +292,7 @@ nano nginx/stream.d/proyecto1_tcp.conf
 ```
 
 Configura el puerto de escucha público en el VPS y el reenvío hacia el puerto TCP interno del proyecto:
+
 ```nginx
 server {
     listen 8883 ssl; # Puerto público expuesto (ej. 8883 para MQTTS, 5432 para Postgres, etc.)
