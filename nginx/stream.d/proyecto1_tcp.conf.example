@@ -1,0 +1,31 @@
+# ==============================================================================
+# Ingress Proxy Layer 4 (Stream): Servicio TCP con Terminación TLS (proyecto1)
+# ==============================================================================
+# Escucha tráfico TCP con cifrado TLS en el puerto público especificado (ej. 8883)
+# y lo reenvía desencriptado hacia el puerto interno TCP del proyecto (ej. 1883)
+# a través del túnel WireGuard (10.10.1.2).
+#
+# Aplica para: Brokers MQTT (MQTTS), Bases de Datos (PostgreSQL, MySQL),
+# APIs binarias, gRPC o protocolos TCP personalizados.
+# ==============================================================================
+
+server {
+    listen 8883 ssl;
+
+    # Certificados TLS Wildcard gestionados por Certbot
+    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+
+    # Protocolos y Ciphers SSL seguros
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_session_cache shared:SSL_TCP_PROYECTO1:10m;
+    ssl_session_timeout 4h;
+
+    # Timeouts adaptados a conexiones persistentes (Keep-Alive)
+    proxy_timeout 1h;
+    proxy_connect_timeout 10s;
+
+    # Reenvío a través del túnel WireGuard hacia el servicio TCP interno de proyecto1
+    proxy_pass 10.10.1.2:1883;
+}

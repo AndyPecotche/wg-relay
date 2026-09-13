@@ -38,13 +38,13 @@ flowchart TD
     end
 
     subgraph CGNAT_Area ["🔒 Redes Privadas / Detrás de CGNAT (Sin IP Pública)"]
-        subgraph Proj1 ["Proyecto 1 (10.10.1.2) - Ej: SensorHub"]
+        subgraph Proj1 ["Proyecto 1 (10.10.1.2)"]
             WG_Peer1["WireGuard Client (Proyecto 1)<br/>(PersistentKeepalive=25)"]
             Web1["Servicio Web / HTTP (:80)"]
             TCP1["Servicio TCP / Broker MQTT (:1883)"]
         end
 
-        subgraph Proj2 ["Proyecto 2 (10.10.2.2) - Ej: Telemetría"]
+        subgraph Proj2 ["Proyecto 2 (10.10.2.2)"]
             WG_Peer2["WireGuard Client (Proyecto 2)<br/>(PersistentKeepalive=25)"]
             TCP2["Servicio TCP / Backend API (:3000)"]
         end
@@ -82,18 +82,27 @@ wg-relay/
 ├── nginx/
 │   ├── nginx.conf                      # Configuración base con soporte L7 (http) y L4 (stream)
 │   ├── conf.d/
-│   │   └── sensorhub.conf.example      # Plantilla L7: VirtualHost HTTPS con WebSockets (Proyecto 1)
+│   │   └── proyecto1.conf.example      # Plantilla L7 Ingress: Wildcard *.proyecto1 -> Nginx Local
 │   └── stream.d/
-│       └── sensorhub_mqtt.conf.example # Plantilla L4: Proxy TCP con terminación TLS (Servicio TCP)
+│       └── proyecto1_tcp.conf.example  # Plantilla L4: Proxy TCP con terminación TLS (Servicio TCP)
 ├── wireguard/
 │   ├── assemble.sh                     # Compilador idempotente de peers y sync en caliente
 │   ├── templates/
 │   │   └── interface.conf              # Configuración base wg0 + reglas de firewall iptables
 │   └── peers.d/
-│       └── sensorhub.conf.example      # Plantilla modular de peer WireGuard (Proyecto 1)
-└── scripts/
-    ├── add-peer.sh                     # Asistente interactivo/CLI para registrar un nuevo proyecto
-    └── reload.sh                       # Recarga en caliente sin downtime (Nginx + WireGuard)
+│       └── proyecto1.conf.example      # Plantilla modular de peer WireGuard (Proyecto 1)
+├── scripts/
+│   ├── add-peer.sh                     # Asistente interactivo/CLI para registrar un nuevo proyecto
+│   └── reload.sh                       # Recarga en caliente sin downtime (Nginx + WireGuard)
+└── examples/
+    └── client-project/                 # Plantilla completa para correr en el servidor local (CGNAT)
+        ├── docker-compose.yml          # Stack local (WireGuard + Nginx Local + Apps)
+        ├── README.md                   # Guía de despliegue local
+        ├── wireguard/
+        │   └── wg0.conf.example        # Configuración del túnel cliente hacia el VPS
+        └── nginx/
+            └── conf.d/
+                └── default.conf        # Enrutamiento local de subdominios a contenedores
 ```
 
 ---
@@ -260,48 +269,48 @@ sudo systemctl enable --now wg-quick@wg0
 ping 10.10.0.1
 ```
 
-### 3. Exponer Servicios en Nginx
+### 3. Exponer el Proyecto en Nginx (1 Sola Entrada en el VPS)
 
-#### Opción A: Exponer Servicio Web / API / Dashboard (L7 HTTP/HTTPS)
+Con este enfoque, en el VPS configuras **una sola entrada por proyecto** delegando todo hacia el Nginx local del proyecto.
+
+#### Opción A: Ingress Web / HTTP Comodín (L7 HTTP/HTTPS)
 
 Copia la plantilla a un archivo activo `.conf`:
 
 ```bash
-cp nginx/conf.d/sensorhub.conf.example nginx/conf.d/proyecto1_web.conf
-nano nginx/conf.d/proyecto1_web.conf
+cp nginx/conf.d/proyecto1.conf.example nginx/conf.d/proyecto1.conf
 ```
 
-Ajusta el subdominio y el puerto de destino del proyecto:
-
+Esta plantilla ya incluye la regla comodín:
 ```nginx
-server_name proyecto1.tudominio.com;
+server_name proyecto1.tudominio.com *.proyecto1.tudominio.com;
 
 location / {
-    proxy_pass http://10.10.1.2:80; # O puerto HTTP/API de tu servicio (ej. 3000, 8080)
+    proxy_pass http://10.10.1.2:80; # Reenvía todo al Nginx local de proyecto1
+    proxy_set_header Host $host;   # Preserva el subdominio exacto solicitado
     ...
 }
 ```
+*¡Listo en el VPS! Ahora todos los subdominios de este proyecto (`api.proyecto1...`, `dashboard.proyecto1...`) viajarán automáticamente a tu Nginx local. Consulta la plantilla lista para usar en [`examples/client-project/`](examples/client-project/README.md) para levantar WireGuard + Nginx Local en tu máquina.*
 
 #### Opción B: Exponer Servicio TCP con TLS (L4 Stream TCP - ej. MQTT, DB, Socket)
 
-Copia la plantilla de stream:
+Si el proyecto también expone un flujo TCP raw o con TLS:
 
 ```bash
-cp nginx/stream.d/sensorhub_mqtt.conf.example nginx/stream.d/proyecto1_tcp.conf
-nano nginx/stream.d/proyecto1_tcp.conf
+cp nginx/stream.d/proyecto1_tcp.conf.example nginx/stream.d/proyecto1_tcp.conf
 ```
 
 Configura el puerto de escucha público en el VPS y el reenvío hacia el puerto TCP interno del proyecto:
-
 ```nginx
 server {
-    listen 8883 ssl; # Puerto público expuesto (ej. 8883 para MQTTS, 5432 para Postgres, etc.)
+    listen 8883 ssl; # Puerto público expuesto en el VPS
 
     ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
 
     # Reenvío hacia el servicio TCP interno del peer remoto
-    proxy_pass 10.10.1.2:1883; # O puerto interno (ej. 1883 MQTT, 5432 DB, 9000 Socket)
+    proxy_pass 10.10.1.2:1883; # Puerto interno en la máquina remota
 }
 ```
 

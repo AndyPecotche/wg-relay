@@ -32,7 +32,7 @@ VPN_GATEWAY_IP="${VPN_GATEWAY_IP:-10.10.0.1}"
 # 1. Obtener nombre del proyecto
 PROJECT_NAME="${1:-}"
 if [ -z "${PROJECT_NAME}" ]; then
-    read -r -p "Nombre del proyecto/peer (ej. sensorhub, telemetry, iot-gateway): " PROJECT_NAME
+    read -r -p "Nombre del proyecto/peer (ej. proyecto1, proyecto2, backend-iot): " PROJECT_NAME
 fi
 
 # Sanitizar nombre (solo minúsculas, números, guiones y guión bajo)
