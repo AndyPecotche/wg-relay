@@ -257,17 +257,44 @@ fi
 mkdir -p "${PEERS_DIR}"
 PEER_FILE="${PEERS_DIR}/${PEER_IP}-${PROJECT_NAME}.conf"
 
+# Limpiar archivos huérfanos con IPs distintas para el mismo proyecto
+for d in "${PEERS_DIR}" "${CONF_DIR}" "${STREAM_DIR}"; do
+    for old_file in "${d}"/*"-${PROJECT_NAME}."* "${d}"/*"-${PROJECT_DOMAIN}."*; do
+        [ -e "${old_file}" ] || continue
+        case "$(basename "${old_file}")" in
+            "${PEER_IP}-"*) continue ;; # Conservar el actual
+            *)
+                echo -e "${YELLOW}[i] Eliminando archivo huérfano de configuración anterior: $(basename "${old_file}")${NC}"
+                rm -f "${old_file}"
+                ;;
+        esac
+    done
+done
+
+CLIENT_PUBKEY=""
+CLIENT_PRIVKEY=""
+
 if [ -f "${PEER_FILE}" ]; then
-    echo -e "${YELLOW}[i] Ya existía un peer previo en ${PEER_FILE}. Se actualizará.${NC}"
+    EXISTING_CLIENT_PUBKEY=$(grep -E '^[[:space:]]*PublicKey' "${PEER_FILE}" | head -n1 | awk '{print $NF}' || true)
+    if [ -n "${EXISTING_CLIENT_PUBKEY}" ]; then
+        echo -e "${YELLOW}[i] Clave pública de cliente detectada en el peer actual: ${EXISTING_CLIENT_PUBKEY}${NC}"
+        read -r -p "¿Deseas conservar la clave pública actual del cliente? (S/n): " KEEP_CLIENT_KEY
+        if [[ ! "$KEEP_CLIENT_KEY" =~ ^([nN][oO]|[nN])$ ]]; then
+            CLIENT_PUBKEY="${EXISTING_CLIENT_PUBKEY}"
+            echo -e "${GREEN}[✓] Conservando clave actual del cliente (no necesitarás reconfigurar el cliente).${NC}"
+        fi
+    fi
 fi
 
-echo -e "${CYAN}[+] Generando par de claves WireGuard para el cliente...${NC}"
-if command -v wg >/dev/null 2>&1; then
-    CLIENT_PRIVKEY=$(wg genkey)
-    CLIENT_PUBKEY=$(echo "${CLIENT_PRIVKEY}" | wg pubkey)
-else
-    CLIENT_PRIVKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard wg genkey | tr -d '\r\n')
-    CLIENT_PUBKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard /bin/sh -c "echo '${CLIENT_PRIVKEY}' | wg pubkey" | tr -d '\r\n')
+if [ -z "${CLIENT_PUBKEY}" ]; then
+    echo -e "${CYAN}[+] Generando nuevo par de claves WireGuard para el cliente...${NC}"
+    if command -v wg >/dev/null 2>&1; then
+        CLIENT_PRIVKEY=$(wg genkey)
+        CLIENT_PUBKEY=$(echo "${CLIENT_PRIVKEY}" | wg pubkey)
+    else
+        CLIENT_PRIVKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard wg genkey | tr -d '\r\n')
+        CLIENT_PUBKEY=$(docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T wireguard /bin/sh -c "echo '${CLIENT_PRIVKEY}' | wg pubkey" | tr -d '\r\n')
+    fi
 fi
 
 # Guardar peer modular
@@ -423,6 +450,16 @@ if [[ "$ENABLE_STREAM" =~ ^([sS][iI]|[sS])$ ]]; then
     STREAM_MAP_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${MAP_EXT}"
     STREAM_CONF_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${FILE_EXT}"
 
+    # Evitar duplicados de la misma regla SNI en stream.d
+    for existing_map in "${STREAM_DIR}"/*.map*; do
+        [ -e "${existing_map}" ] || continue
+        [ "${existing_map}" = "${STREAM_MAP_FILE}" ] && continue
+        if grep -qE "^[[:space:]]*${TCP_SUBDOMAIN}[[:space:]]+" "${existing_map}" 2>/dev/null; then
+            echo -e "${YELLOW}[i] Eliminando regla SNI previa en conflicto para '${TCP_SUBDOMAIN}' en $(basename "${existing_map}")${NC}"
+            rm -f "${existing_map}" "${existing_map%.map*}.conf" "${existing_map%.map*}.conf.disabled" 2>/dev/null || true
+        fi
+    done
+
     # Generar mapeo SNI
     cat <<EOF > "${STREAM_MAP_FILE}"
 # ==============================================================================
@@ -519,8 +556,10 @@ echo -e "${YELLOW}${BOLD}-------------------------------------------------------
 
 cat <<EOF
 [Interface]
-# Clave privada generada exclusivamente para '${PROJECT_NAME}':
-PrivateKey = ${CLIENT_PRIVKEY}
+${CLIENT_PRIVKEY:+# Clave privada generada exclusivamente para '${PROJECT_NAME}':}
+${CLIENT_PRIVKEY:+PrivateKey = ${CLIENT_PRIVKEY}}
+${CLIENT_PRIVKEY:-# Conserva la clave privada configurada en tu cliente local:}
+${CLIENT_PRIVKEY:-PrivateKey = <TU_CLAVE_PRIVADA_LOCAL>}
 Address = ${PEER_IP}/16
 
 [Peer]
