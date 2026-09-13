@@ -209,7 +209,7 @@ Ejecuta el script indicando el dominio específico del proyecto:
 
 ```bash
 chmod +x certbot/init-cert.sh wireguard/assemble.sh scripts/*.sh
-./certbot/init-cert.sh dominio-proyecto1.com
+./certbot/init-cert.sh dominio-proyecto1.com #Opcional
 ```
 
 El script verificará el token con Cloudflare, creará el registro TXT temporal `_acme-challenge` y guardará los certificados en `certbot/conf/live/dominio-proyecto1.com/` cubriendo tanto `dominio-proyecto1.com` como `*.dominio-proyecto1.com`. Puedes repetir este comando en cualquier momento para agregar nuevos proyectos con dominios totalmente diferentes.
