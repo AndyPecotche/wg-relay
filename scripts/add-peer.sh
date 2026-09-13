@@ -140,3 +140,4 @@ echo -e "${CYAN}[Próximo paso] Para exponer este servicio públicamente en Ngin
 echo -e "  - L7 Web/API: Crea 'nginx/conf.d/${PROJECT_NAME}.conf' apuntando a http://${PEER_IP}:<puerto>"
 echo -e "  - L4 TCP/MQTTS: Crea 'nginx/stream.d/${PROJECT_NAME}.conf' apuntando a ${PEER_IP}:<puerto>"
 echo -e "  - Luego ejecuta: ./scripts/reload.sh\n"
+

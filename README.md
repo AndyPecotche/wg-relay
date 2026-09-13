@@ -31,39 +31,39 @@ flowchart TD
 
     subgraph VPS ["🖥️ Relay VPS (wg-relay)"]
         subgraph DockerNet ["Red Docker Bridge Estática (172.28.0.0/16)"]
-            Nginx["Nginx Reverse Proxy\nIP: 172.28.0.10\n- L7: conf.d/*.conf\n- L4: stream.d/*.conf\n- Terminación TLS"]
-            WG_Server["WireGuard Gateway\nIP: 172.28.0.2\nVPN: 10.10.0.1/16\n- Firewall: wg0 -> wg0 REJECT"]
-            Certbot["Certbot Daemon\nIP: 172.28.0.20\n- DNS-01 Cloudflare"]
+            Nginx["Nginx Reverse Proxy<br/>IP: 172.28.0.10<br/>• L7: conf.d/*.conf<br/>• L4: stream.d/*.conf<br/>• Terminación TLS"]
+            WG_Server["WireGuard Gateway<br/>IP: 172.28.0.2<br/>VPN: 10.10.0.1/16<br/>• Firewall: wg0 a wg0 REJECT"]
+            Certbot["Certbot Daemon<br/>IP: 172.28.0.20<br/>• DNS-01 Cloudflare"]
         end
     end
 
     subgraph CGNAT_Area ["🔒 Redes Privadas / Detrás de CGNAT (Sin IP Pública)"]
         subgraph Proj1 ["Proyecto: SensorHub (10.10.1.2)"]
-            WG_Peer1["WireGuard Client\n(PersistentKeepalive=25)"]
+            WG_Peer1["WireGuard Client<br/>(PersistentKeepalive=25)"]
             Web1["Dashboard Web (:80)"]
             Broker1["EMQX MQTT (:1883)"]
         end
 
         subgraph Proj2 ["Proyecto 2: Telemetría (10.10.2.2)"]
-            WG_Peer2["WireGuard Client\n(PersistentKeepalive=25)"]
+            WG_Peer2["WireGuard Client<br/>(PersistentKeepalive=25)"]
             API2["Backend API (:3000)"]
         end
     end
 
-    ClientWeb -->|HTTPS :443| Nginx
-    ClientMQTT -->|MQTTS :8883| Nginx
-    Certbot <-->|DNS-01 API| CF_DNS
+    ClientWeb -->|"HTTPS :443"| Nginx
+    ClientMQTT -->|"MQTTS :8883"| Nginx
+    Certbot <-->|"DNS-01 API"| CF_DNS
 
-    Nginx -->|Ruta L3: 10.10.0.0/16| WG_Server
-    WG_Server -->|Túnel UDP 51820| WG_Peer1
-    WG_Server -->|Túnel UDP 51820| WG_Peer2
+    Nginx -->|"Ruta L3: 10.10.0.0/16"| WG_Server
+    WG_Server -->|"Túnel UDP 51820"| WG_Peer1
+    WG_Server -->|"Túnel UDP 51820"| WG_Peer2
 
     WG_Peer1 --> Web1
     WG_Peer1 --> Broker1
     WG_Peer2 --> API2
 
     %% Aislamiento
-    WG_Peer1 -.x|BLOQUEADO POR IPTABLES| WG_Peer2
+    WG_Peer1 x--x|"Tráfico lateral bloqueado (iptables)"| WG_Peer2
 ```
 
 ---
@@ -151,12 +151,14 @@ nano .env
 ```
 
 Ajusta al menos:
+
 - `BASE_DOMAIN`: Tu dominio raíz (ej. `midominio.com`).
 - `CERTBOT_EMAIL`: Tu correo para notificaciones de expiración.
 
 ### Paso 3: Configurar Credenciales de Cloudflare
 
 Crea un **API Token** en Cloudflare:
+
 1. Dirígete a [Cloudflare Dashboard -> My Profile -> API Tokens](https://dash.cloudflare.com/profile/api-tokens).
 2. Haz clic en **Create Token** -> **Create Custom Token**.
 3. Permisos: `Zone` -> `DNS` -> `Edit`.
@@ -169,11 +171,13 @@ nano certbot/cloudflare.ini
 ```
 
 Pega el token:
+
 ```ini
 dns_cloudflare_api_token = TU_TOKEN_DE_CLOUDFLARE_AQUI
 ```
 
 Asegura permisos estrictos:
+
 ```bash
 chmod 600 certbot/cloudflare.ini
 ```
@@ -196,6 +200,7 @@ docker compose up -d
 ```
 
 Verifica que todos los contenedores estén en estado saludable:
+
 ```bash
 docker compose ps
 ```
@@ -215,6 +220,7 @@ Ejecuta el asistente interactivo:
 ```
 
 El script:
+
 1. Genera un par de claves WireGuard para el cliente si no especificas una.
 2. Crea de forma aislada el archivo `wireguard/peers.d/sensorhub.conf`.
 3. Sincroniza la configuración del kernel (`wg syncconf`) en caliente sin desconectar otros peers ni reiniciar el contenedor.
@@ -242,12 +248,14 @@ PersistentKeepalive = 25
 > [!IMPORTANT]
 > **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
 
-3. Inicia y habilita WireGuard en el cliente:
+1. Inicia y habilita WireGuard en el cliente:
+
 ```bash
 sudo systemctl enable --now wg-quick@wg0
 ```
 
-4. Prueba la conectividad hacia el VPS:
+1. Prueba la conectividad hacia el VPS:
+
 ```bash
 ping 10.10.0.1
 ```
@@ -342,7 +350,7 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
                     +---------------------------+
 ```
 
-### Pasos para replicar en un segundo VPS:
+### Pasos para replicar en un segundo VPS
 
 1. **Clonar en el VPS 2:**
    Clona el repositorio en el nuevo servidor.
@@ -362,22 +370,26 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
 
 ## Comandos de Operación y Mantenimiento
 
-### Ver estado de conexiones y handshakes de WireGuard:
+### Ver estado de conexiones y handshakes de WireGuard
+
 ```bash
 docker compose exec wireguard wg show
 ```
 
-### Ver logs de Nginx en tiempo real:
+### Ver logs de Nginx en tiempo real
+
 ```bash
 docker compose logs -f nginx
 ```
 
-### Ver logs del proxy de streams (MQTTS):
+### Ver logs del proxy de streams (MQTTS)
+
 ```bash
 docker compose exec nginx tail -f /var/log/nginx/stream_access.log
 ```
 
-### Forzar renovación de certificados Let's Encrypt:
+### Forzar renovación de certificados Let's Encrypt
+
 ```bash
 docker compose run --rm certbot certonly --dns-cloudflare \
   --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
@@ -385,7 +397,8 @@ docker compose run --rm certbot certonly --dns-cloudflare \
 ./scripts/reload.sh --nginx-only
 ```
 
-### Backup rápido de claves y certificados:
+### Backup rápido de claves y certificados
+
 ```bash
 tar -czvf wg-relay-backup-$(date +%F).tar.gz \
   .env \

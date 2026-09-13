@@ -87,3 +87,4 @@ echo -e "${GREEN}    Ruta: certbot/conf/live/${BASE_DOMAIN}/fullchain.pem${NC}"
 echo -e "${GREEN}    Clave: certbot/conf/live/${BASE_DOMAIN}/privkey.pem${NC}"
 echo -e "${GREEN}========================================================================${NC}"
 echo -e "${BLUE}[i] Ya puedes iniciar o recargar Nginx con: docker compose up -d nginx${NC}"
+

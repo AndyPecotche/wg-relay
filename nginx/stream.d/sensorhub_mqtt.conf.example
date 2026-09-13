@@ -24,3 +24,4 @@ server {
     # Reenvío a través del túnel WireGuard hacia el broker MQTT local del peer
     proxy_pass 10.10.1.2:1883;
 }
+

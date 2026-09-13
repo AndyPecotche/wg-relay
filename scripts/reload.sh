@@ -67,3 +67,4 @@ case "${TARGET}" in
 esac
 
 echo -e "${GREEN}=== [wg-relay] Recarga completada sin interrupción de servicio ===${NC}"
+

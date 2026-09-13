@@ -10,3 +10,4 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.example text eol=lf
+
