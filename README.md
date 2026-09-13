@@ -237,37 +237,157 @@ El script:
 
 ### 2. Configurar el Cliente Remoto (Detrás de CGNAT)
 
-En el servidor local, Raspberry Pi o Edge Gateway del proyecto remoto (`proyecto1`):
+En tu máquina local, servidor, Raspberry Pi o mini-PC del proyecto (`proyecto1`):
+
+#### Opción A: Contenerizado con Docker Compose (Recomendado)
+
+Esta es la forma más limpia y portátil, ya que todo el stack (WireGuard, Nginx local y tus aplicaciones) corre en Docker sin instalar nada en el sistema operativo host.
+
+1. **Estructura en tu servidor local:**
+   ```
+   mi-proyecto1-local/
+   ├── docker-compose.yml
+   ├── wireguard/
+   │   └── wg0.conf
+   └── nginx/
+       └── conf.d/
+           └── default.conf
+   ```
+
+2. **Crear `wireguard/wg0.conf`** con el bloque generado por `add-peer.sh`:
+   ```ini
+   [Interface]
+   PrivateKey = <CLAVE_PRIVADA_GENERADA_POR_ADD_PEER>
+   Address = 10.10.1.2/16
+
+   [Peer]
+   PublicKey = <CLAVE_PUBLICA_DEL_VPS>
+   Endpoint = <IP_O_HOST_DEL_VPS>:51820
+   AllowedIPs = 10.10.0.0/16
+   PersistentKeepalive = 25
+   ```
+
+   > [!IMPORTANT]
+   > **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
+
+3. **Crear `docker-compose.yml`:**
+   Al usar `network_mode: "service:wireguard"`, el Nginx local comparte el espacio de red con el contenedor WireGuard. Esto hace que Nginx escuche **directamente en la IP de la VPN (`10.10.1.2:80`)** sin exponer puertos en tu red física ni requerir NAT:
+
+   ```yaml
+   services:
+     # 1. Cliente WireGuard hacia el VPS Relay
+     wireguard:
+       image: linuxserver/wireguard:latest
+       container_name: proyecto1-wireguard
+       restart: unless-stopped
+       cap_add:
+         - NET_ADMIN
+         - SYS_MODULE
+       environment:
+         - PUID=1000
+         - PGID=1000
+         - TZ=UTC
+       volumes:
+         - ./wireguard/wg0.conf:/config/wg0.conf:ro
+         - /lib/modules:/lib/modules:ro
+       sysctls:
+         - net.ipv4.conf.all.src_valid_mark=1
+         - net.ipv4.ip_forward=1
+       networks:
+         app_net:
+           ipv4_address: 172.30.0.2
+
+     # 2. Nginx Ingress Local (recibe el tráfico del VPS en 10.10.1.2:80)
+     nginx:
+       image: nginx:alpine
+       container_name: proyecto1-nginx-local
+       restart: unless-stopped
+       network_mode: "service:wireguard"
+       volumes:
+         - ./nginx/conf.d:/etc/nginx/conf.d:ro
+       depends_on:
+         - wireguard
+
+     # 3. Tus microservicios o aplicaciones locales
+     app-dashboard:
+       image: tu-usuario/app-dashboard:latest
+       container_name: proyecto1-dashboard
+       restart: unless-stopped
+       networks:
+         app_net:
+           ipv4_address: 172.30.0.10
+
+     app-api:
+       image: tu-usuario/app-api:latest
+       container_name: proyecto1-api
+       restart: unless-stopped
+       networks:
+         app_net:
+           ipv4_address: 172.30.0.11
+
+   networks:
+     app_net:
+       driver: bridge
+       ipam:
+         config:
+           - subnet: 172.30.0.0/16
+   ```
+
+4. **Crear `nginx/conf.d/default.conf`** (Enrutador de subdominios a tus contenedores locales):
+   ```nginx
+   # Dashboard Web principal
+   server {
+       listen 80;
+       server_name dominio-proyecto1.com;
+
+       location / {
+           proxy_pass http://172.30.0.10:3000;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+   }
+
+   # API Backend
+   server {
+       listen 80;
+       server_name api.dominio-proyecto1.com;
+
+       location / {
+           proxy_pass http://172.30.0.11:8000;
+           proxy_set_header Host $host;
+           proxy_set_header X-Real-IP $remote_addr;
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+   }
+   ```
+
+5. **Levantar el stack en tu servidor local:**
+   ```bash
+   docker compose up -d
+   ```
+
+*(Tienes la plantilla completa lista para copiar en [`examples/client-project/`](examples/client-project/README.md)).*
+
+---
+
+#### Opción B: WireGuard Nativo en el Host (con systemd)
+
+Si prefieres instalar WireGuard directamente en el sistema operativo de tu máquina local:
 
 1. Instala WireGuard: `sudo apt install -y wireguard`
-2. Crea `/etc/wireguard/wg0.conf` con el bloque que imprimió `add-peer.sh`:
-
-```ini
-[Interface]
-PrivateKey = <CLAVE_PRIVADA_GENERADA_POR_ADD_PEER>
-Address = 10.10.1.2/16
-
-[Peer]
-PublicKey = <CLAVE_PUBLICA_DEL_VPS>
-Endpoint = <IP_O_HOST_DEL_VPS>:51820
-AllowedIPs = 10.10.0.0/16
-PersistentKeepalive = 25
-```
-
-> [!IMPORTANT]
-> **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
-
-1. Inicia y habilita WireGuard en el cliente:
-
-```bash
-sudo systemctl enable --now wg-quick@wg0
-```
-
-1. Prueba la conectividad hacia el VPS:
-
-```bash
-ping 10.10.0.1
-```
+2. Guarda la configuración en `/etc/wireguard/wg0.conf`.
+3. Inicia y habilita el servicio:
+   ```bash
+   sudo systemctl enable --now wg-quick@wg0
+   ```
+4. Comprueba la conexión hacia el VPS:
+   ```bash
+   ping 10.10.0.1
+   ```
+5. En tu Nginx local (instalado en el host o en Docker exponiendo `-p 10.10.1.2:80:80`), configura tus bloques `server` para los subdominios.
 
 ### 3. Exponer el Proyecto en Nginx (1 Sola Entrada en el VPS)
 
