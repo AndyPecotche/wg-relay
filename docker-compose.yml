@@ -80,13 +80,13 @@ services:
       /bin/sh -c "
         trap exit TERM;
         while :; do
+          sleep 12h & wait $${!};
           if [ -f /etc/letsencrypt/cloudflare.ini ]; then
             certbot renew \
               --dns-cloudflare \
               --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
               --quiet;
           fi
-          sleep 12h & wait $${!};
         done;
       "
     volumes:

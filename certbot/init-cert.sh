@@ -82,6 +82,11 @@ CF_MOUNT_PATH="/etc/letsencrypt/cloudflare.ini"
 
 cd "${REPO_ROOT}"
 if docker compose ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
+    # Esperar si certbot ya está ejecutando una renovación en segundo plano
+    while docker compose exec -T certbot pgrep -f "certbot" >/dev/null 2>&1; do
+        echo -e "${YELLOW}[i] Certbot está ocupado con una tarea en segundo plano. Esperando unos segundos...${NC}"
+        sleep 3
+    done
     docker compose exec -T certbot certbot certonly \
         --dns-cloudflare \
         --dns-cloudflare-credentials "${CF_MOUNT_PATH}" \
