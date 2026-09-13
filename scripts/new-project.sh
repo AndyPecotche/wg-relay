@@ -154,8 +154,20 @@ echo -e "${GREEN}[✓] Peer WireGuard creado:${NC} ${PEER_FILE}"
 # ------------------------------------------------------------------------------
 # 4. Comprobación y Emisión de Certificados SSL (Antes de Nginx)
 # ------------------------------------------------------------------------------
+check_cert_exists() {
+    local domain="$1"
+    if [ -f "${CERT_LIVE_DIR}/${domain}/fullchain.pem" ]; then
+        return 0
+    fi
+    # Comprobar dentro del contenedor si en el host falla por permisos de root (0700)
+    if docker compose -f "${REPO_ROOT}/docker-compose.yml" exec -T certbot test -f "/etc/letsencrypt/live/${domain}/fullchain.pem" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 echo -e "\n${CYAN}[+] Comprobando certificado SSL para '${PROJECT_DOMAIN}'...${NC}"
-if [ ! -f "${CERT_LIVE_DIR}/${PROJECT_DOMAIN}/fullchain.pem" ]; then
+if ! check_cert_exists "${PROJECT_DOMAIN}"; then
     echo -e "${YELLOW}[!] AVISO: Aún no existe un certificado TLS para '${PROJECT_DOMAIN}'.${NC}"
     read -r -p "¿Deseas solicitar el certificado wildcard a Cloudflare ahora mismo? (S/n): " RUN_CERT
     if [[ ! "$RUN_CERT" =~ ^([nN][oO]|[nN])$ ]]; then
@@ -168,7 +180,7 @@ fi
 HAS_SSL_CERT=false
 FILE_EXT=".conf"
 MAP_EXT=".map"
-if [ -f "${CERT_LIVE_DIR}/${PROJECT_DOMAIN}/fullchain.pem" ]; then
+if check_cert_exists "${PROJECT_DOMAIN}"; then
     HAS_SSL_CERT=true
     echo -e "${GREEN}[✓] Certificado SSL activo verificado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
 else
