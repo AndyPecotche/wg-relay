@@ -2,9 +2,9 @@
 # .env
 # certbot/cloudflare.ini
 
-# # Certificados y logs generados por Certbot
-# certbot/conf/
-# certbot/logs/
+# Certificados y logs generados por Certbot
+certbot/conf/
+certbot/logs/
 
 # Configuraciones generadas y llaves privadas de WireGuard
 # wireguard/config/
