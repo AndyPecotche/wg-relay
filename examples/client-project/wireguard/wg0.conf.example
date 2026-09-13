@@ -18,3 +18,4 @@ Endpoint = vps.tudominio.com:51820
 AllowedIPs = 10.10.0.0/16
 # Mantiene abierta la tabla de traducción NAT de tu router/ISP (CGNAT)
 PersistentKeepalive = 25
+

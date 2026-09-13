@@ -65,3 +65,4 @@ server {
         proxy_buffers 8 8k;
     }
 }
+

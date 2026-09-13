@@ -29,3 +29,4 @@ server {
     # Reenvío a través del túnel WireGuard hacia el servicio TCP interno de proyecto1
     proxy_pass 10.10.1.2:1883;
 }
+

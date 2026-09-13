@@ -63,3 +63,4 @@ Internet (HTTPS)
    - Agrega un bloque `server` en `nginx/conf.d/default.conf` para `grafana.proyecto1.tudominio.com`.
    - Ejecuta `docker compose restart nginx-local`.
    - **No tocas el VPS.** La regla comodín `*.proyecto1.tudominio.com` del VPS ya te envía todo el tráfico automáticamente.
+
