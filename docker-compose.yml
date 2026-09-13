@@ -1,3 +1,4 @@
+name: wg_relay
 services:
   # ----------------------------------------------------------------------------
   # Servicio 1: WireGuard VPN Hub / Gateway
