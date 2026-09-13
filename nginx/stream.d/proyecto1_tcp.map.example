@@ -8,3 +8,4 @@
 
 tcp.dominio-proyecto1.com     127.0.0.1:10001;
 mqtt.dominio-proyecto1.com    127.0.0.1:10001;
+
