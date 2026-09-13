@@ -152,10 +152,38 @@ chmod 600 "${PEER_FILE}"
 echo -e "${GREEN}[✓] Peer WireGuard creado:${NC} ${PEER_FILE}"
 
 # ------------------------------------------------------------------------------
-# 4. Creación de VirtualHost Nginx Layer 7 (conf.d)
+# 4. Comprobación y Emisión de Certificados SSL (Antes de Nginx)
+# ------------------------------------------------------------------------------
+echo -e "\n${CYAN}[+] Comprobando certificado SSL para '${PROJECT_DOMAIN}'...${NC}"
+if [ ! -f "${CERT_LIVE_DIR}/${PROJECT_DOMAIN}/fullchain.pem" ]; then
+    echo -e "${YELLOW}[!] AVISO: Aún no existe un certificado TLS para '${PROJECT_DOMAIN}'.${NC}"
+    read -r -p "¿Deseas solicitar el certificado wildcard a Cloudflare ahora mismo? (S/n): " RUN_CERT
+    if [[ ! "$RUN_CERT" =~ ^([nN][oO]|[nN])$ ]]; then
+        "${REPO_ROOT}/certbot/init-cert.sh" "${PROJECT_DOMAIN}" || {
+            echo -e "${RED}[!] La solicitud de certificado no pudo completarse en este momento.${NC}"
+        }
+    fi
+fi
+
+HAS_SSL_CERT=false
+FILE_EXT=".conf"
+MAP_EXT=".map"
+if [ -f "${CERT_LIVE_DIR}/${PROJECT_DOMAIN}/fullchain.pem" ]; then
+    HAS_SSL_CERT=true
+    echo -e "${GREEN}[✓] Certificado SSL activo verificado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
+else
+    echo -e "\n${YELLOW}[!] ADVERTENCIA: Certificado TLS no encontrado para '${PROJECT_DOMAIN}'.${NC}"
+    echo -e "${YELLOW}[i] Para proteger Nginx contra errores de sintaxis, los archivos se generarán como '.disabled'.${NC}"
+    echo -e "${YELLOW}[i] Podrás emitir el certificado luego con: ./certbot/init-cert.sh ${PROJECT_DOMAIN}${NC}"
+    FILE_EXT=".conf.disabled"
+    MAP_EXT=".map.disabled"
+fi
+
+# ------------------------------------------------------------------------------
+# 5. Creación de VirtualHost Nginx Layer 7 (conf.d)
 # ------------------------------------------------------------------------------
 mkdir -p "${CONF_DIR}"
-NGINX_CONF_FILE="${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf"
+NGINX_CONF_FILE="${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${FILE_EXT}"
 
 cat <<EOF > "${NGINX_CONF_FILE}"
 # ==============================================================================
@@ -211,7 +239,7 @@ EOF
 echo -e "${GREEN}[✓] VirtualHost Nginx L7 creado:${NC} ${NGINX_CONF_FILE}"
 
 # ------------------------------------------------------------------------------
-# 5. Configuración Opcional de TCP Stream con TLS en Puerto 443 (SNI Multiplexer)
+# 6. Configuración Opcional de TCP Stream con TLS en Puerto 443 (SNI Multiplexer)
 # ------------------------------------------------------------------------------
 find_next_internal_stream_port() {
     local config_ports
@@ -256,8 +284,8 @@ if [[ "$ENABLE_STREAM" =~ ^([sS][iI]|[sS])$ ]]; then
     read -r -p "Puerto TCP interno en el cliente remoto (ej. 1883 para MQTT, 5432 para DB) [default: 1883]: " USER_REM_PORT
     STREAM_REMOTE_PORT="${USER_REM_PORT:-1883}"
 
-    STREAM_MAP_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map"
-    STREAM_CONF_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf"
+    STREAM_MAP_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${MAP_EXT}"
+    STREAM_CONF_FILE="${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${FILE_EXT}"
 
     # Generar mapeo SNI
     cat <<EOF > "${STREAM_MAP_FILE}"
@@ -296,27 +324,21 @@ EOF
 fi
 
 # ------------------------------------------------------------------------------
-# 6. Comprobación y Emisión Opcional de Certificados SSL
-# ------------------------------------------------------------------------------
-echo -e "\n${CYAN}[+] Comprobando certificado SSL para '${PROJECT_DOMAIN}'...${NC}"
-if [ ! -f "${CERT_LIVE_DIR}/${PROJECT_DOMAIN}/fullchain.pem" ]; then
-    echo -e "${YELLOW}[!] AVISO: Aún no existe un certificado TLS para '${PROJECT_DOMAIN}'.${NC}"
-    read -r -p "¿Deseas solicitar el certificado wildcard a Cloudflare ahora mismo? (S/n): " RUN_CERT
-    if [[ ! "$RUN_CERT" =~ ^([nN][oO]|[nN])$ ]]; then
-        "${REPO_ROOT}/certbot/init-cert.sh" "${PROJECT_DOMAIN}" || {
-            echo -e "${RED}[!] La solicitud de certificado falló o requiere configurar cloudflare.ini.${NC}"
-            echo -e "${YELLOW}[i] Podrás emitirlo luego ejecutando: ./certbot/init-cert.sh ${PROJECT_DOMAIN}${NC}"
-        }
-    fi
-else
-    echo -e "${GREEN}[✓] Certificado SSL existente detectado en certbot/conf/live/${PROJECT_DOMAIN}/${NC}"
-fi
-
-# ------------------------------------------------------------------------------
 # 7. Sincronización y Recarga en Caliente
 # ------------------------------------------------------------------------------
-echo -e "\n${BLUE}[+] Sincronizando WireGuard y Nginx...${NC}"
-"${REPO_ROOT}/scripts/reload.sh"
+echo -e "\n${BLUE}[+] Sincronizando servicios...${NC}"
+if [ "${HAS_SSL_CERT}" = true ]; then
+    "${REPO_ROOT}/scripts/reload.sh"
+else
+    "${REPO_ROOT}/scripts/reload.sh" --wg-only
+    echo -e "${YELLOW}[i] Solo se sincronizó WireGuard. Cuando emitas el certificado para '${PROJECT_DOMAIN}', ejecuta:${NC}"
+    echo -e "${CYAN}    mv ${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled ${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf${NC}"
+    if [ -n "${STREAM_CONF_FILE}" ]; then
+        echo -e "${CYAN}    mv ${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map.disabled ${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.map${NC}"
+        echo -e "${CYAN}    mv ${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf.disabled ${STREAM_DIR}/${PEER_IP}-${PROJECT_DOMAIN}.conf${NC}"
+    fi
+    echo -e "${CYAN}    ./scripts/reload.sh${NC}"
+fi
 
 # ------------------------------------------------------------------------------
 # 8. Obtener Clave Pública del VPS y Entregar Configuración

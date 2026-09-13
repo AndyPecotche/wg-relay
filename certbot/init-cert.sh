@@ -81,16 +81,29 @@ echo -e "${BLUE}[+] Solicitando certificado para '${TARGET_DOMAIN}' y '*.${TARGE
 CF_MOUNT_PATH="/etc/letsencrypt/cloudflare.ini"
 
 cd "${REPO_ROOT}"
-docker compose run --rm --entrypoint certbot certbot certonly \
-    --dns-cloudflare \
-    --dns-cloudflare-credentials "${CF_MOUNT_PATH}" \
-    --dns-cloudflare-propagation-seconds 30 \
-    -d "${TARGET_DOMAIN}" \
-    -d "*.${TARGET_DOMAIN}" \
-    --email "${CERTBOT_EMAIL}" \
-    --agree-tos \
-    --no-eff-email \
-    --non-interactive
+if docker compose ps --services --filter "status=running" 2>/dev/null | grep -q "^certbot$"; then
+    docker compose exec -T certbot certbot certonly \
+        --dns-cloudflare \
+        --dns-cloudflare-credentials "${CF_MOUNT_PATH}" \
+        --dns-cloudflare-propagation-seconds 30 \
+        -d "${TARGET_DOMAIN}" \
+        -d "*.${TARGET_DOMAIN}" \
+        --email "${CERTBOT_EMAIL}" \
+        --agree-tos \
+        --no-eff-email \
+        --non-interactive
+else
+    docker compose run --rm --entrypoint certbot certbot certonly \
+        --dns-cloudflare \
+        --dns-cloudflare-credentials "${CF_MOUNT_PATH}" \
+        --dns-cloudflare-propagation-seconds 30 \
+        -d "${TARGET_DOMAIN}" \
+        -d "*.${TARGET_DOMAIN}" \
+        --email "${CERTBOT_EMAIL}" \
+        --agree-tos \
+        --no-eff-email \
+        --non-interactive
+fi
 
 echo -e "\n${GREEN}========================================================================${NC}"
 echo -e "${GREEN}[✓] ¡Certificados TLS Wildcard generados para '${TARGET_DOMAIN}'!${NC}"

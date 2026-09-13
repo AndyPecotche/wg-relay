@@ -94,8 +94,7 @@ services:
       - ./certbot/logs:/var/log/letsencrypt
       - ./certbot/cloudflare.ini:/etc/letsencrypt/cloudflare.ini:ro
     networks:
-      relay_net:
-        ipv4_address: ${CERTBOT_CONTAINER_IP:-172.28.0.20}
+      - relay_net
 
 # ------------------------------------------------------------------------------
 # Red Bridge Estática Interna
