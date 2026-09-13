@@ -43,21 +43,42 @@ if [ -z "${PROJECT_NAME}" ]; then
     exit 1
 fi
 
-PEER_FILE="${PEERS_DIR}/${PROJECT_NAME}.conf"
+# 2. Obtener o autoasignar IP del peer en la VPN
+find_next_vpn_ip() {
+    local assigned_ips
+    assigned_ips=$(find "${PEERS_DIR}" -type f -name "*.conf" 2>/dev/null | \
+                   xargs grep -rhoE '10\.10\.[0-9]+\.[0-9]+' 2>/dev/null || true)
+    local all_ips="${assigned_ips} ${VPN_GATEWAY_IP}"
+
+    for x in $(seq 1 254); do
+        for y in $(seq 2 254); do
+            local candidate="10.10.${x}.${y}"
+            if ! echo "${all_ips}" | grep -qw "${candidate}"; then
+                echo "${candidate}"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+PEER_IP="${2:-}"
+if [ -z "${PEER_IP}" ]; then
+    AUTO_IP=$(find_next_vpn_ip)
+    echo -e "${GREEN}[+] Siguiente IP disponible:${NC} ${AUTO_IP}"
+    read -r -p "Presiona Enter para usar ${AUTO_IP} o ingresa otra IP: " USER_IP
+    PEER_IP="${USER_IP:-${AUTO_IP}}"
+fi
+
+# Limpiar posible máscara si el usuario escribió /32 o /16
+PEER_IP="${PEER_IP%/*}"
+
+PEER_FILE="${PEERS_DIR}/${PEER_IP}-${PROJECT_NAME}.conf"
 
 if [ -f "${PEER_FILE}" ]; then
     echo -e "${RED}[!] ERROR: Ya existe una configuración para el proyecto '${PROJECT_NAME}' en ${PEER_FILE}.${NC}" >&2
     exit 1
 fi
-
-# 2. Obtener IP del peer en la VPN
-PEER_IP="${2:-}"
-if [ -z "${PEER_IP}" ]; then
-    read -r -p "Dirección IP asignada dentro de la VPN (ej. 10.10.1.2): " PEER_IP
-fi
-
-# Limpiar posible máscara si el usuario escribió /32 o /16
-PEER_IP="${PEER_IP%/*}"
 
 # Validar formato básico de IP
 if [[ ! "${PEER_IP}" =~ ^10\.10\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then

@@ -92,7 +92,8 @@ wg-relay/
 │   └── peers.d/
 │       └── proyecto1.conf.example      # Plantilla modular de peer WireGuard (Proyecto 1)
 ├── scripts/
-│   ├── add-peer.sh                     # Asistente interactivo/CLI para registrar un nuevo proyecto
+│   ├── new-project.sh                  # Asistente ALL-IN-ONE: autoasigna IP, crea L7, L4 stream, emite cert y recarga
+│   ├── add-peer.sh                     # Asistente individual para registrar peers WireGuard
 │   └── reload.sh                       # Recarga en caliente sin downtime (Nginx + WireGuard)
 └── examples/
     └── client-project/                 # Plantilla completa para correr en el servidor local (CGNAT)
@@ -216,113 +217,75 @@ docker compose ps
 
 ---
 
-### Flujo de Trabajo: Agregar un Nuevo Proyecto
+### Flujo de Trabajo: Alta Automatizada de un Nuevo Proyecto
 
-Para incorporar un proyecto a la red VPN y exponer sus servicios (ej. `proyecto1` en IP `10.10.1.2`):
-
-### 1. Registrar el Peer en WireGuard
-
-Ejecuta el asistente interactivo:
+Para incorporar cualquier proyecto nuevo a la red y exponer sus servicios, solo necesitas ejecutar el asistente automatizado:
 
 ```bash
-./scripts/add-peer.sh proyecto1 10.10.1.2
+./scripts/new-project.sh [nombre_proyecto] [dominio_base]
 ```
 
-El script:
-
-1. Genera un par de claves WireGuard para el cliente si no especificas una.
-2. Crea de forma aislada el archivo `wireguard/peers.d/proyecto1.conf`.
-3. Sincroniza la configuración del kernel (`wg syncconf`) en caliente sin desconectar otros peers ni reiniciar el contenedor.
-4. Imprime en pantalla el bloque de configuración listo para pegar en el cliente.
-
-### 2. Configurar el Cliente Remoto (Detrás de CGNAT)
-
-En el servidor local, Raspberry Pi o Edge Gateway del proyecto remoto (`proyecto1`):
-
-1. Instala WireGuard: `sudo apt install -y wireguard`
-2. Crea `/etc/wireguard/wg0.conf` con el bloque que imprimió `add-peer.sh`:
-
-```ini
-[Interface]
-PrivateKey = <CLAVE_PRIVADA_GENERADA_POR_ADD_PEER>
-Address = 10.10.1.2/16
-
-[Peer]
-PublicKey = <CLAVE_PUBLICA_DEL_VPS>
-Endpoint = <IP_O_HOST_DEL_VPS>:51820
-AllowedIPs = 10.10.0.0/16
-PersistentKeepalive = 25
-```
-
-> [!IMPORTANT]
-> **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
-
-1. Inicia y habilita WireGuard en el cliente:
-
+**Ejemplo interactivo:**
 ```bash
-sudo systemctl enable --now wg-quick@wg0
+./scripts/new-project.sh sensorhub sensorhub.andy.net.ar
 ```
 
-1. Prueba la conectividad hacia el VPS:
+#### ¿Qué hace el asistente automáticamente?
 
-```bash
-ping 10.10.0.1
-```
+1. **Auto-asignación de IP en la VPN (`10.10.x.y`):**
+   - Inspecciona los archivos existentes y asigna automáticamente la siguiente IP secuencial disponible (ej. `10.10.1.2`, `10.10.1.3`...).
+   - Genera las llaves criptográficas del cliente y crea el peer:
+     `wireguard/peers.d/<IP>-<proyecto>.conf` (ej. `10.10.1.2-sensorhub.conf`).
+2. **Generación del Ingress L7 en Nginx:**
+   - Crea el archivo `nginx/conf.d/<IP>-<dominio>.conf` (ej. `10.10.1.2-sensorhub.andy.net.ar.conf`).
+   - Configura la regla comodín (`server_name <dominio> *.<dominio>`) delegando todo el tráfico HTTP/HTTPS hacia `http://<IP>:80` con preservación del encabezado `Host $host`.
+3. **Configuración Opcional de TCP Stream L4 (MQTTS, DB, Sockets):**
+   - El script te pregunta si deseas habilitar un proxy TCP para este proyecto.
+   - De ser afirmativo, detecta el siguiente puerto de escucha público libre desde el **`8083` hasta el `50000`** (ej. `8083`, `8084`...).
+   - Solicita el puerto interno del contenedor/servicio remoto (ej. `1883` para MQTT o `5432` para PostgreSQL).
+   - Crea el archivo:
+     `nginx/stream.d/<PUERTO>-<dominio>.conf` (ej. `8083-sensorhub.andy.net.ar.conf`).
+4. **Validación de Certificados TLS:**
+   - Comprueba si el certificado para ese dominio ya existe en `certbot/conf/live/<dominio>/`.
+   - Si no existe, te ofrece emitir el certificado comodín con Cloudflare DNS-01 en ese mismo instante.
+5. **Sincronización en Caliente:**
+   - Ejecuta `./scripts/reload.sh` sincronizando WireGuard (`wg syncconf`) y recargando Nginx (`nginx -s reload`) con **cero downtime**.
+6. **Entrega de Configuración para el Cliente Remoto:**
+   - Imprime en pantalla el bloque listo para pegar en el cliente (`/etc/wireguard/wg0.conf`).
 
-### 3. Exponer el Proyecto en Nginx (1 Sola Entrada en el VPS)
+---
 
-Con este enfoque, en el VPS configuras **una sola entrada por proyecto** delegando todo hacia el Nginx local del proyecto con su propio dominio independiente.
+### Configurar el Nodo Local (Detrás de CGNAT)
 
-#### Opción A: Ingress Web / HTTP Comodín (L7 HTTP/HTTPS)
+En el servidor local, Raspberry Pi o máquina donde corre tu proyecto:
 
-Copia la plantilla a un archivo activo `.conf`:
+1. Copia la carpeta de plantilla [`examples/client-project/`](examples/client-project/):
+   ```bash
+   cp -r examples/client-project /ruta/a/mi-proyecto
+   cd /ruta/a/mi-proyecto
+   ```
+2. Configura `/wireguard/wg0.conf` con el bloque de claves y la IP entregada por `new-project.sh`:
+   ```ini
+   [Interface]
+   PrivateKey = <CLAVE_PRIVADA_GENERADA>
+   Address = 10.10.1.2/16
 
-```bash
-cp nginx/conf.d/proyecto1.conf.example nginx/conf.d/proyecto1.conf
-```
+   [Peer]
+   PublicKey = <CLAVE_PUBLICA_DEL_VPS>
+   Endpoint = <IP_O_HOST_DEL_VPS>:51820
+   AllowedIPs = 10.10.0.0/16
+   PersistentKeepalive = 25
+   ```
+   > [!IMPORTANT]
+   > **`PersistentKeepalive = 25`** es mandatorio para mantener abierto el túnel saliente a través del CGNAT.
 
-Esta plantilla ya incluye la regla comodín para el dominio propio de este proyecto:
-```nginx
-server_name dominio-proyecto1.com *.dominio-proyecto1.com;
-
-location / {
-    proxy_pass http://10.10.1.2:80; # Reenvía todo al Nginx local de proyecto1
-    proxy_set_header Host $host;   # Preserva el subdominio exacto solicitado
-    ...
-}
-```
-*¡Listo en el VPS! Ahora todos los subdominios de este proyecto (`api.dominio-proyecto1.com`, `dashboard...`) viajarán automáticamente a tu Nginx local. Consulta la plantilla lista para usar en [`examples/client-project/`](examples/client-project/README.md) para levantar WireGuard + Nginx Local en tu máquina.*
-
-#### Opción B: Exponer Servicio TCP con TLS (L4 Stream TCP - ej. MQTT, DB, Socket)
-
-Si el proyecto también expone un flujo TCP raw o con TLS:
-
-```bash
-cp nginx/stream.d/proyecto1_tcp.conf.example nginx/stream.d/proyecto1_tcp.conf
-```
-
-Configura el puerto de escucha público en el VPS y el reenvío hacia el puerto TCP interno del proyecto:
-```nginx
-server {
-    listen 8883 ssl; # Puerto público expuesto en el VPS
-
-    ssl_certificate     /etc/letsencrypt/live/dominio-proyecto1.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/dominio-proyecto1.com/privkey.pem;
-
-    # Reenvío hacia el servicio TCP interno del peer remoto
-    proxy_pass 10.10.1.2:1883; # Puerto interno en la máquina remota
-}
-```
-
-### 4. Recargar Nginx y WireGuard en Caliente
-
-Aplica los cambios sin caída de servicio (*Zero Downtime*):
-
-```bash
-./scripts/reload.sh
-```
-
-El script valida la sintaxis con `nginx -t` antes de aplicar `nginx -s reload`. Si hay algún error tipográfico, no afectará a los servicios que ya están en producción.
+3. Levanta el stack local con WireGuard y Nginx local:
+   ```bash
+   docker compose up -d
+   ```
+4. Ya puedes acceder desde Internet a:
+   - **Web / API:** `https://<dominio>` y `https://*.<dominio>`
+   - **TCP Stream:** `<IP_O_HOST_VPS>:<PUERTO_ASIGNADO>` (con TLS)
 
 ---
 
