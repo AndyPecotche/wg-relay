@@ -2,7 +2,7 @@
 
 > **VPS Ingress Relay & Reverse Proxy Multi-Proyecto Modular con WireGuard, Nginx y Certbot (Cloudflare DNS-01).**
 
-`wg-relay` es una solución contenerizada y lista para producción que convierte uno o más VPS públicos en gateways de entrada (*ingress proxies*) con terminación TLS centralizada. Permite exponer hacia Internet servicios web (HTTP/HTTPS) y flujos de telemetría IoT (MQTTS/TCP) alojados en redes privadas locales detrás de **CGNAT** (sin IP pública ni apertura de puertos), garantizando un **aislamiento perimetral estricto (Zero-Trust L3)** entre proyectos.
+`wg-relay` es una solución contenerizada y lista para producción que convierte uno o más VPS públicos en gateways de entrada (*ingress proxies*) con terminación TLS centralizada. Permite exponer hacia Internet servicios web (HTTP/HTTPS) y servicios TCP con o sin TLS (MQTTS/MQTT, bases de datos, APIs de sockets o flujos de telemetría IoT) alojados en redes privadas locales detrás de **CGNAT** (sin IP pública ni apertura de puertos), garantizando un **aislamiento perimetral estricto (Zero-Trust L3)** entre proyectos.
 
 ---
 
@@ -24,34 +24,34 @@
 ```mermaid
 flowchart TD
     subgraph Internet ["🌐 Internet Público"]
-        ClientWeb["Navegador / Cliente API (HTTPS :443)"]
-        ClientMQTT["Dispositivo IoT / Sensor (MQTTS :8883)"]
+        ClientWeb["Cliente Web / API (HTTPS :443)"]
+        ClientTCP["Cliente TCP / Dispositivo IoT (TCP TLS :8883 / :puerto)"]
         CF_DNS["Cloudflare DNS (Proxy / Wildcard *.tudominio.com)"]
     end
 
     subgraph VPS ["🖥️ Relay VPS (wg-relay)"]
         subgraph DockerNet ["Red Docker Bridge Estática (172.28.0.0/16)"]
-            Nginx["Nginx Reverse Proxy<br/>IP: 172.28.0.10<br/>• L7: conf.d/*.conf<br/>• L4: stream.d/*.conf<br/>• Terminación TLS"]
+            Nginx["Nginx Reverse Proxy<br/>IP: 172.28.0.10<br/>• L7: conf.d/*.conf (Web/API)<br/>• L4: stream.d/*.conf (Servicios TCP)<br/>• Terminación TLS"]
             WG_Server["WireGuard Gateway<br/>IP: 172.28.0.2<br/>VPN: 10.10.0.1/16<br/>• Firewall: wg0 a wg0 REJECT"]
             Certbot["Certbot Daemon<br/>IP: 172.28.0.20<br/>• DNS-01 Cloudflare"]
         end
     end
 
     subgraph CGNAT_Area ["🔒 Redes Privadas / Detrás de CGNAT (Sin IP Pública)"]
-        subgraph Proj1 ["Proyecto: SensorHub (10.10.1.2)"]
-            WG_Peer1["WireGuard Client<br/>(PersistentKeepalive=25)"]
-            Web1["Dashboard Web (:80)"]
-            Broker1["EMQX MQTT (:1883)"]
+        subgraph Proj1 ["Proyecto 1 (10.10.1.2) - Ej: SensorHub"]
+            WG_Peer1["WireGuard Client (Proyecto 1)<br/>(PersistentKeepalive=25)"]
+            Web1["Servicio Web / HTTP (:80)"]
+            TCP1["Servicio TCP / Broker MQTT (:1883)"]
         end
 
-        subgraph Proj2 ["Proyecto 2: Telemetría (10.10.2.2)"]
-            WG_Peer2["WireGuard Client<br/>(PersistentKeepalive=25)"]
-            API2["Backend API (:3000)"]
+        subgraph Proj2 ["Proyecto 2 (10.10.2.2) - Ej: Telemetría"]
+            WG_Peer2["WireGuard Client (Proyecto 2)<br/>(PersistentKeepalive=25)"]
+            TCP2["Servicio TCP / Backend API (:3000)"]
         end
     end
 
     ClientWeb -->|"HTTPS :443"| Nginx
-    ClientMQTT -->|"MQTTS :8883"| Nginx
+    ClientTCP -->|"TCP TLS :8883"| Nginx
     Certbot <-->|"DNS-01 API"| CF_DNS
 
     Nginx -->|"Ruta L3: 10.10.0.0/16"| WG_Server
@@ -59,8 +59,8 @@ flowchart TD
     WG_Server -->|"Túnel UDP 51820"| WG_Peer2
 
     WG_Peer1 --> Web1
-    WG_Peer1 --> Broker1
-    WG_Peer2 --> API2
+    WG_Peer1 --> TCP1
+    WG_Peer2 --> TCP2
 
     %% Aislamiento
     WG_Peer1 x--x|"Tráfico lateral bloqueado (iptables)"| WG_Peer2
@@ -82,15 +82,15 @@ wg-relay/
 ├── nginx/
 │   ├── nginx.conf                      # Configuración base con soporte L7 (http) y L4 (stream)
 │   ├── conf.d/
-│   │   └── sensorhub.conf.example      # Ejemplo L7: VirtualHost HTTPS con WebSockets
+│   │   └── sensorhub.conf.example      # Plantilla L7: VirtualHost HTTPS con WebSockets (Proyecto 1)
 │   └── stream.d/
-│       └── sensorhub_mqtt.conf.example # Ejemplo L4: Terminación TLS TCP para Broker MQTT
+│       └── sensorhub_mqtt.conf.example # Plantilla L4: Proxy TCP con terminación TLS (Servicio TCP)
 ├── wireguard/
 │   ├── assemble.sh                     # Compilador idempotente de peers y sync en caliente
 │   ├── templates/
 │   │   └── interface.conf              # Configuración base wg0 + reglas de firewall iptables
 │   └── peers.d/
-│       └── sensorhub.conf.example      # Ejemplo de configuración modular de un peer
+│       └── sensorhub.conf.example      # Plantilla modular de peer WireGuard (Proyecto 1)
 └── scripts/
     ├── add-peer.sh                     # Asistente interactivo/CLI para registrar un nuevo proyecto
     └── reload.sh                       # Recarga en caliente sin downtime (Nginx + WireGuard)
@@ -105,8 +105,8 @@ wg-relay/
 - **Docker Engine y Docker Compose:** Docker v24+ y Compose v2+.
 - **Puertos del VPS abiertos en el Firewall del Proveedor:**
   - `80/TCP` (HTTP Ingress / Redirección HTTPS)
-  - `443/TCP` (HTTPS Ingress L7)
-  - `8883/TCP` (MQTTS TLS Ingress L4)
+  - `443/TCP` (HTTPS Ingress L7 - Web / APIs)
+  - `8883/TCP` (Servicio TCP / MQTTS TLS Ingress L4 - o puertos TCP que requieran tus proyectos)
   - `51820/UDP` (WireGuard VPN Handshake)
 
 ---
@@ -132,7 +132,7 @@ sudo ufw default allow outgoing
 sudo ufw allow 22/tcp comment 'SSH'
 sudo ufw allow 80/tcp comment 'HTTP Ingress'
 sudo ufw allow 443/tcp comment 'HTTPS Ingress'
-sudo ufw allow 8883/tcp comment 'MQTTS Ingress'
+sudo ufw allow 8883/tcp comment 'Servicio TCP TLS Ingress (ej. MQTTS)'
 sudo ufw allow 51820/udp comment 'WireGuard VPN'
 sudo ufw enable
 ```
@@ -207,28 +207,27 @@ docker compose ps
 
 ---
 
-## Flujo de Trabajo: Agregar un Nuevo Proyecto
+### Flujo de Trabajo: Agregar un Nuevo Proyecto
 
-Para incorporar un proyecto (por ejemplo, el gateway del proyecto **SensorHub**):
+Para incorporar un proyecto a la red VPN y exponer sus servicios (ej. `proyecto1` en IP `10.10.1.2`):
 
 ### 1. Registrar el Peer en WireGuard
 
 Ejecuta el asistente interactivo:
 
 ```bash
-./scripts/add-peer.sh sensorhub 10.10.1.2
+./scripts/add-peer.sh proyecto1 10.10.1.2
 ```
 
 El script:
-
 1. Genera un par de claves WireGuard para el cliente si no especificas una.
-2. Crea de forma aislada el archivo `wireguard/peers.d/sensorhub.conf`.
+2. Crea de forma aislada el archivo `wireguard/peers.d/proyecto1.conf`.
 3. Sincroniza la configuración del kernel (`wg syncconf`) en caliente sin desconectar otros peers ni reiniciar el contenedor.
 4. Imprime en pantalla el bloque de configuración listo para pegar en el cliente.
 
 ### 2. Configurar el Cliente Remoto (Detrás de CGNAT)
 
-En el servidor, Raspberry Pi o Edge Gateway del proyecto SensorHub:
+En el servidor local, Raspberry Pi o Edge Gateway del proyecto remoto (`proyecto1`):
 
 1. Instala WireGuard: `sudo apt install -y wireguard`
 2. Crea `/etc/wireguard/wg0.conf` con el bloque que imprimió `add-peer.sh`:
@@ -248,14 +247,12 @@ PersistentKeepalive = 25
 > [!IMPORTANT]
 > **`PersistentKeepalive = 25`** es mandatorio. Dado que el nodo remoto está detrás de CGNAT, no tiene IP pública entrante. Esta directiva envía un paquete UDP cada 25 segundos para mantener abierta la tabla de traducción de estados del NAT del ISP.
 
-1. Inicia y habilita WireGuard en el cliente:
-
+3. Inicia y habilita WireGuard en el cliente:
 ```bash
 sudo systemctl enable --now wg-quick@wg0
 ```
 
-1. Prueba la conectividad hacia el VPS:
-
+4. Prueba la conectividad hacia el VPS:
 ```bash
 ping 10.10.0.1
 ```
@@ -267,22 +264,41 @@ ping 10.10.0.1
 Copia la plantilla a un archivo activo `.conf`:
 
 ```bash
-cp nginx/conf.d/sensorhub.conf.example nginx/conf.d/sensorhub.conf
-nano nginx/conf.d/sensorhub.conf
+cp nginx/conf.d/sensorhub.conf.example nginx/conf.d/proyecto1_web.conf
+nano nginx/conf.d/proyecto1_web.conf
 ```
 
-Ajusta el `server_name` (`sensorhub.tudominio.com`) y el `proxy_pass http://10.10.1.2:80;`.
+Ajusta el subdominio y el puerto de destino del proyecto:
+```nginx
+server_name proyecto1.tudominio.com;
 
-#### Opción B: Exponer Broker MQTT con TLS (L4 Stream TCP)
+location / {
+    proxy_pass http://10.10.1.2:80; # O puerto HTTP/API de tu servicio (ej. 3000, 8080)
+    ...
+}
+```
+
+#### Opción B: Exponer Servicio TCP con TLS (L4 Stream TCP - ej. MQTT, DB, Socket)
 
 Copia la plantilla de stream:
 
 ```bash
-cp nginx/stream.d/sensorhub_mqtt.conf.example nginx/stream.d/sensorhub_mqtt.conf
-nano nginx/stream.d/sensorhub_mqtt.conf
+cp nginx/stream.d/sensorhub_mqtt.conf.example nginx/stream.d/proyecto1_tcp.conf
+nano nginx/stream.d/proyecto1_tcp.conf
 ```
 
-Ajusta el `proxy_pass 10.10.1.2:1883;`.
+Configura el puerto de escucha público en el VPS y el reenvío hacia el puerto TCP interno del proyecto:
+```nginx
+server {
+    listen 8883 ssl; # Puerto público expuesto (ej. 8883 para MQTTS, 5432 para Postgres, etc.)
+
+    ssl_certificate     /etc/letsencrypt/live/tudominio.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/tudominio.com/privkey.pem;
+
+    # Reenvío hacia el servicio TCP interno del peer remoto
+    proxy_pass 10.10.1.2:1883; # O puerto interno (ej. 1883 MQTT, 5432 DB, 9000 Socket)
+}
+```
 
 ### 4. Recargar Nginx y WireGuard en Caliente
 
@@ -298,7 +314,7 @@ El script valida la sintaxis con `nginx -t` antes de aplicar `nginx -s reload`. 
 
 ## Aislamiento de Red y Seguridad (iptables)
 
-Para garantizar que un cliente comprometido en el proyecto A no pueda escanear ni acceder a los recursos del proyecto B, `interface.conf` aplica las siguientes reglas a nivel de kernel:
+Para garantizar que un cliente comprometido en el **Proyecto 1** no pueda escanear ni acceder a los recursos del **Proyecto 2**, `interface.conf` aplica las siguientes reglas a nivel de kernel:
 
 ```ini
 # 1. BLOQUEO LATERAL ABSOLUTO
@@ -314,9 +330,9 @@ PostUp = iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE
 
 ### ¿Cómo funciona el flujo de paquetes?
 
-1. **Cliente Externo -> Web:**
-   El usuario se conecta a `https://sensorhub.tudominio.com`. Nginx (en `172.28.0.10`) procesa el TLS y envía la petición hacia `10.10.1.2`. El kernel del contenedor Nginx sigue la ruta estática hacia la IP de WireGuard (`172.28.0.2`), ingresando a la interfaz `eth0` de WireGuard y reenviándose por el túnel `wg0` hacia el cliente.
-2. **Tráfico entre Peers (10.10.1.2 -> 10.10.2.2):**
+1. **Cliente Externo -> Servicio del Proyecto 1:**
+   El usuario o dispositivo se conecta a `https://proyecto1.tudominio.com` o al puerto de su servicio TCP. Nginx (en `172.28.0.10`) procesa el TLS y envía la petición hacia `10.10.1.2`. El kernel del contenedor Nginx sigue la ruta estática hacia la IP de WireGuard (`172.28.0.2`), ingresando a la interfaz `eth0` de WireGuard y reenviándose por el túnel `wg0` hacia el cliente.
+2. **Tráfico entre Peers (Proyecto 1: 10.10.1.2 -> Proyecto 2: 10.10.2.2):**
    Si `10.10.1.2` intenta hacer ping o conectarse a `10.10.2.2`, el paquete entra por `wg0` y pretende salir por `wg0`. La regla `FORWARD -i wg0 -o wg0 -j REJECT` descarta y rechaza la conexión de forma inmediata.
 
 ---
@@ -344,7 +360,7 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
                                   | (Túnel Dual)
                                   v
                     +---------------------------+
-                    | Edge Gateway (SensorHub)  |
+                    | Edge Gateway (Proyecto 1) |
                     | wg0 -> VPS 1              |
                     | wg1 -> VPS 2              |
                     +---------------------------+
@@ -359,7 +375,7 @@ La arquitectura es completamente sin estado (*stateless*), lo que permite clonar
 3. **Obtener Certificados en VPS 2:**
    Ejecuta `./certbot/init-cert.sh` con el mismo token de Cloudflare.
 4. **Configurar el Cliente Dual en el Edge:**
-   En el dispositivo del cliente (ej. SensorHub), configura dos interfaces WireGuard:
+   En el dispositivo del cliente (ej. Edge Gateway del Proyecto 1), configura dos interfaces WireGuard:
    - `wg0.conf`: Conexión hacia VPS 1 (`10.10.1.2`).
    - `wg1.conf`: Conexión hacia VPS 2 (`10.20.1.2`).
 5. **Configurar Cloudflare:**
@@ -382,7 +398,7 @@ docker compose exec wireguard wg show
 docker compose logs -f nginx
 ```
 
-### Ver logs del proxy de streams (MQTTS)
+### Ver logs del proxy de servicios TCP (L4 Stream / MQTTS)
 
 ```bash
 docker compose exec nginx tail -f /var/log/nginx/stream_access.log
