@@ -326,21 +326,26 @@ El script valida la sintaxis con `nginx -t` antes de aplicar `nginx -s reload`. 
 
 ---
 
-## Aislamiento de Red y Seguridad (iptables)
+## Aislamiento de Red y Seguridad (Directivas Nativas de WireGuard)
 
-Para garantizar que un cliente comprometido en el **Proyecto 1** no pueda escanear ni acceder a los recursos del **Proyecto 2**, `interface.conf` aplica las siguientes reglas a nivel de kernel:
+Todo el aislamiento y las reglas de seguridad son **100% declarativas y están versionadas en Git**. No necesitas configurar iptables manualmente en el sistema operativo del VPS.
+
+En el archivo [`wireguard/templates/interface.conf`](wireguard/templates/interface.conf), la herramienta nativa `wg-quick` ejecuta automáticamente directivas `PostUp` dentro del contenedor cada vez que levanta la interfaz `wg0`:
 
 ```ini
-# 1. BLOQUEO LATERAL ABSOLUTO
+# 1. BLOQUEO LATERAL ABSOLUTO (Ejecutado automáticamente por WireGuard al arrancar)
 PostUp = iptables -I FORWARD -i wg0 -o wg0 -j REJECT
 
 # 2. ACCESO PERMITIDO SOLO DESDE EL REVERSE PROXY
 PostUp = iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT
 PostUp = iptables -A FORWARD -i wg0 -o eth0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 
-# 3. MASQUERADE
+# 3. MASQUERADE (Retorno transparente a través del túnel)
 PostUp = iptables -t nat -A POSTROUTING -o wg0 -j MASQUERADE
 ```
+
+> [!NOTE]
+> Gracias a que estas reglas residen en la plantilla de WireGuard de este repositorio, el VPS es completamente **stateless**. Si clonas este repositorio en un segundo servidor y ejecutas `docker compose up -d`, la seguridad y el aislamiento perimetral se aplican de forma inmediata sin pasos manuales.
 
 ### ¿Cómo funciona el flujo de paquetes?
 
