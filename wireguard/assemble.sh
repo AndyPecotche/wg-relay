@@ -62,9 +62,9 @@ if [ -d "${PEERS_DIR}" ]; then
         # Verificar si hay archivos coincidentes (evitar el glob literal si está vacío)
         [ -e "${peer_file}" ] || continue
         
-        # Ignorar archivos que terminen en .example o temporales
+        # Ignorar archivos temporales, desactivados o de control git
         case "${peer_file}" in
-            *.example|*.bak|*.tmp) continue ;;
+            *.example|*.bak|*.tmp|*.disabled|*.gitkeep) continue ;;
         esac
 
         peer_name=$(basename "${peer_file}")

@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PEERS_DIR="${REPO_ROOT}/wireguard/peers.d"
 ENV_FILE="${REPO_ROOT}/.env"
+PEER_TEMPLATE="${REPO_ROOT}/templates/wireguard/peer.conf.template"
 
 # Colores
 RED='\033[0;31m'
@@ -18,6 +19,8 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 echo -e "${BLUE}=== [wg-relay] Asistente de Alta de Peer / Proyecto ===${NC}"
+echo -e "${YELLOW}[Tip] Para dar de alta completa (WireGuard + VirtualHost Nginx + SSL + TCP SNI), ejecuta:${NC}"
+echo -e "      ${CYAN}./scripts/new-project.sh [nombre_proyecto] [dominio]${NC}\n"
 
 # Cargar variables de entorno
 if [ -f "${ENV_FILE}" ]; then
@@ -108,15 +111,23 @@ if [ -z "${CLIENT_PUBKEY}" ]; then
     echo -e "${GREEN}[✓] Claves generadas exitosamente.${NC}"
 fi
 
-# 4. Crear archivo modular del peer en peers.d/
 mkdir -p "${PEERS_DIR}"
-cat <<EOF > "${PEER_FILE}"
+if [ -f "${PEER_TEMPLATE}" ]; then
+    sed -e "s|{{PROJECT_NAME}}|${PROJECT_NAME}|g" \
+        -e "s|{{PROJECT_DOMAIN}}|${PROJECT_NAME}.local|g" \
+        -e "s|{{CREATION_DATE}}|$(date -u +"%Y-%m-%dT%H:%M:%SZ")|g" \
+        -e "s|{{CLIENT_PUBKEY}}|${CLIENT_PUBKEY}|g" \
+        -e "s|{{PEER_IP}}|${PEER_IP}|g" \
+        "${PEER_TEMPLATE}" > "${PEER_FILE}"
+else
+    cat <<EOF > "${PEER_FILE}"
 [Peer]
 # Proyecto: ${PROJECT_NAME}
 # Fecha de creación: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
 PublicKey = ${CLIENT_PUBKEY}
 AllowedIPs = ${PEER_IP}/32
 EOF
+fi
 
 chmod 600 "${PEER_FILE}"
 echo -e "${GREEN}[✓] Archivo de peer creado: ${PEER_FILE}${NC}"
