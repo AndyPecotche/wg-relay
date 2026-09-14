@@ -554,12 +554,22 @@ echo -e "\n${YELLOW}${BOLD}-----------------------------------------------------
 echo -e "${YELLOW} Configuración lista para el Cliente Remoto ('/etc/wireguard/wg0.conf'): ${NC}"
 echo -e "${YELLOW}${BOLD}------------------------------------------------------------------------${NC}"
 
+PRIVKEY_BLOCK=""
+if [ -n "${CLIENT_PRIVKEY}" ]; then
+    PRIVKEY_BLOCK="# Clave privada generada exclusivamente para '${PROJECT_NAME}':
+PrivateKey = ${CLIENT_PRIVKEY}"
+else
+    PRIVKEY_BLOCK="# Conserva la clave privada configurada en tu cliente local:
+PrivateKey = <TU_CLAVE_PRIVADA_LOCAL>"
+fi
+
 cat <<EOF
 [Interface]
 ${CLIENT_PRIVKEY:+# Clave privada generada exclusivamente para '${PROJECT_NAME}':}
 ${CLIENT_PRIVKEY:+PrivateKey = ${CLIENT_PRIVKEY}}
 ${CLIENT_PRIVKEY:-# Conserva la clave privada configurada en tu cliente local:}
 ${CLIENT_PRIVKEY:-PrivateKey = <TU_CLAVE_PRIVADA_LOCAL>}
+${PRIVKEY_BLOCK}
 Address = ${PEER_IP}/16
 
 [Peer]
