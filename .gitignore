@@ -6,11 +6,11 @@ certbot/cloudflare.ini
 certbot/conf/
 certbot/logs/
 
-Configuraciones generadas y llaves privadas de WireGuard
+# Configuraciones generadas y llaves privadas de WireGuard
 wireguard/config/
 
-Peers activos (mantener solo ejemplos .example en git)
-# wireguard/peers.d/*.conf
+# Peers activos (mantener solo ejemplos .example en git)
+wireguard/peers.d/*.conf
 !wireguard/peers.d/*.example
 
 # Virtualhosts activos de Nginx (mantener solo ejemplos .example en git)
