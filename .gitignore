@@ -6,12 +6,12 @@
 certbot/conf/
 certbot/logs/
 
-# Configuraciones generadas y llaves privadas de WireGuard
-# wireguard/config/
+Configuraciones generadas y llaves privadas de WireGuard
+wireguard/config/
 
-# Peers activos (mantener solo ejemplos .example en git)
-# wireguard/peers.d/*.conf
-# !wireguard/peers.d/*.example
+Peers activos (mantener solo ejemplos .example en git)
+wireguard/peers.d/*.conf
+!wireguard/peers.d/*.example
 
 # Virtualhosts activos de Nginx (mantener solo ejemplos .example en git)
 # nginx/conf.d/*.conf
