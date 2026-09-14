@@ -565,10 +565,6 @@ fi
 
 cat <<EOF
 [Interface]
-${CLIENT_PRIVKEY:+# Clave privada generada exclusivamente para '${PROJECT_NAME}':}
-${CLIENT_PRIVKEY:+PrivateKey = ${CLIENT_PRIVKEY}}
-${CLIENT_PRIVKEY:-# Conserva la clave privada configurada en tu cliente local:}
-${CLIENT_PRIVKEY:-PrivateKey = <TU_CLAVE_PRIVADA_LOCAL>}
 ${PRIVKEY_BLOCK}
 Address = ${PEER_IP}/16
 
