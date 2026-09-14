@@ -1,6 +1,6 @@
 # Entornos y Secretos
-# .env
-# certbot/cloudflare.ini
+.env
+certbot/cloudflare.ini
 
 # Certificados y logs generados por Certbot
 certbot/conf/
@@ -10,17 +10,17 @@ Configuraciones generadas y llaves privadas de WireGuard
 wireguard/config/
 
 Peers activos (mantener solo ejemplos .example en git)
-wireguard/peers.d/*.conf
+# wireguard/peers.d/*.conf
 !wireguard/peers.d/*.example
 
 # Virtualhosts activos de Nginx (mantener solo ejemplos .example en git)
-# nginx/conf.d/*.conf
-# !nginx/conf.d/*.example
-# nginx/stream.d/*.conf
-# !nginx/stream.d/*.example
-# nginx/stream.d/*.map
-# !nginx/stream.d/*.example
-# !nginx/stream.d/00-base.map
+nginx/conf.d/*.conf
+!nginx/conf.d/*.example
+nginx/stream.d/*.conf
+!nginx/stream.d/*.example
+nginx/stream.d/*.map
+!nginx/stream.d/*.example
+!nginx/stream.d/00-base.map
 
 # Archivos de sistema y editores
 .DS_Store
