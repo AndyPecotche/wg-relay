@@ -19,3 +19,4 @@ server {
 
     proxy_pass {{PEER_IP}}:{{STREAM_REMOTE_PORT}};
 }
+
