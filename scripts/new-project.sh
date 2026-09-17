@@ -25,6 +25,11 @@ CONF_DIR="${REPO_ROOT}/nginx/conf.d"
 STREAM_DIR="${REPO_ROOT}/nginx/stream.d"
 CERT_LIVE_DIR="${REPO_ROOT}/certbot/conf/live"
 ENV_FILE="${REPO_ROOT}/.env"
+TEMPLATES_DIR="${REPO_ROOT}/templates"
+PEER_TEMPLATE="${TEMPLATES_DIR}/wireguard/peer.conf.template"
+VHOST_TEMPLATE="${TEMPLATES_DIR}/nginx/vhost.conf.template"
+STREAM_MAP_TEMPLATE="${TEMPLATES_DIR}/nginx/sni.map.template"
+STREAM_TERM_TEMPLATE="${TEMPLATES_DIR}/nginx/terminator.conf.template"
 
 # Colores
 RED='\033[0;31m'
@@ -83,6 +88,29 @@ echo -e "${CYAN}[i] Dominio:${NC}  ${BOLD}${PROJECT_DOMAIN}${NC} (y comodín *.$
 # ------------------------------------------------------------------------------
 # Funciones Auxiliares
 # ------------------------------------------------------------------------------
+render_template() {
+    local template_file="$1"
+    local output_file="$2"
+    shift 2
+
+    if [ ! -f "${template_file}" ]; then
+        echo -e "${RED}[!] ERROR CRÍTICO: No se encuentra la plantilla ${template_file}.${NC}" >&2
+        exit 1
+    fi
+
+    local content
+    content=$(cat "${template_file}")
+
+    while [ "$#" -gt 0 ]; do
+        local key="$1"
+        local val="$2"
+        shift 2
+        content=$(echo "${content}" | sed "s|{{${key}}}|${val}|g")
+    done
+
+    echo "${content}" > "${output_file}"
+}
+
 get_server_pubkey() {
     local key=""
     local pub_file="${REPO_ROOT}/wireguard/config/server.pub"
@@ -297,15 +325,13 @@ if [ -z "${CLIENT_PUBKEY}" ]; then
     fi
 fi
 
-# Guardar peer modular
-cat <<EOF > "${PEER_FILE}"
-[Peer]
-# Proyecto: ${PROJECT_NAME}
-# Dominio: ${PROJECT_DOMAIN}
-# Fecha de creación: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-PublicKey = ${CLIENT_PUBKEY}
-AllowedIPs = ${PEER_IP}/32
-EOF
+# Guardar peer modular desde plantilla
+render_template "${PEER_TEMPLATE}" "${PEER_FILE}" \
+    "PROJECT_NAME" "${PROJECT_NAME}" \
+    "PROJECT_DOMAIN" "${PROJECT_DOMAIN}" \
+    "CREATION_DATE" "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+    "CLIENT_PUBKEY" "${CLIENT_PUBKEY}" \
+    "PEER_IP" "${PEER_IP}"
 
 chmod 600 "${PEER_FILE}"
 echo -e "${GREEN}[✓] Peer WireGuard creado:${NC} ${PEER_FILE}"
@@ -348,56 +374,11 @@ fi
 mkdir -p "${CONF_DIR}"
 NGINX_CONF_FILE="${CONF_DIR}/${PEER_IP}-${PROJECT_DOMAIN}${FILE_EXT}"
 
-cat <<EOF > "${NGINX_CONF_FILE}"
-# ==============================================================================
-# Ingress L7: ${PROJECT_NAME} (${PROJECT_DOMAIN})
-# IP VPN Asignada: ${PEER_IP}
-# ==============================================================================
-
-server {
-    listen 80;
-    server_name ${PROJECT_DOMAIN} *.${PROJECT_DOMAIN};
-
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 127.0.0.1:8443 ssl;
-    http2 on;
-    server_name ${PROJECT_DOMAIN} *.${PROJECT_DOMAIN};
-
-    ssl_certificate     /etc/letsencrypt/live/${PROJECT_DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${PROJECT_DOMAIN}/privkey.pem;
-
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-
-    client_max_body_size 64M;
-
-    location / {
-        proxy_pass http://${PEER_IP}:80;
-
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection \$connection_upgrade;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$host;
-        proxy_set_header X-Forwarded-Port \$server_port;
-
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-    }
-}
-EOF
+# Generar VirtualHost Nginx desde plantilla
+render_template "${VHOST_TEMPLATE}" "${NGINX_CONF_FILE}" \
+    "PROJECT_NAME" "${PROJECT_NAME}" \
+    "PROJECT_DOMAIN" "${PROJECT_DOMAIN}" \
+    "PEER_IP" "${PEER_IP}"
 
 echo -e "${GREEN}[✓] VirtualHost Nginx L7 creado:${NC} ${NGINX_CONF_FILE}"
 
@@ -460,38 +441,22 @@ if [[ "$ENABLE_STREAM" =~ ^([sS][iI]|[sS])$ ]]; then
         fi
     done
 
-    # Generar mapeo SNI
-    cat <<EOF > "${STREAM_MAP_FILE}"
-# ==============================================================================
-# Regla SNI (Port 443 Stream Multiplexer): ${PROJECT_NAME}
-# ==============================================================================
-${TCP_SUBDOMAIN}    127.0.0.1:${STREAM_INTERNAL_PORT};
-EOF
+    # Generar mapeo SNI desde plantilla
+    render_template "${STREAM_MAP_TEMPLATE}" "${STREAM_MAP_FILE}" \
+        "PROJECT_NAME" "${PROJECT_NAME}" \
+        "TCP_SUBDOMAIN" "${TCP_SUBDOMAIN}" \
+        "STREAM_INTERNAL_PORT" "${STREAM_INTERNAL_PORT}"
 
-    # Generar terminador TLS interno
-    cat <<EOF > "${STREAM_CONF_FILE}"
-# ==============================================================================
-# Terminador TLS Interno (Stream L4): ${PROJECT_NAME} (${TCP_SUBDOMAIN})
-# Escucha interna: 127.0.0.1:${STREAM_INTERNAL_PORT} -> Destino remoto: ${PEER_IP}:${STREAM_REMOTE_PORT}
-# ==============================================================================
-
-server {
-    listen 127.0.0.1:${STREAM_INTERNAL_PORT} ssl;
-
-    ssl_certificate     /etc/letsencrypt/live/${PROJECT_DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${PROJECT_DOMAIN}/privkey.pem;
-
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_session_cache shared:SSL_TCP_${PROJECT_NAME}_${STREAM_INTERNAL_PORT}:10m;
-    ssl_session_timeout 4h;
-
-    proxy_timeout 1h;
-    proxy_connect_timeout 10s;
-
-    proxy_pass ${PEER_IP}:${STREAM_REMOTE_PORT};
-}
-EOF
+    # Generar terminador TLS interno desde plantilla
+    PROJECT_NAME_CLEAN=$(echo "${PROJECT_NAME}" | tr -cd '[:alnum:]_')
+    render_template "${STREAM_TERM_TEMPLATE}" "${STREAM_CONF_FILE}" \
+        "PROJECT_NAME" "${PROJECT_NAME}" \
+        "PROJECT_NAME_CLEAN" "${PROJECT_NAME_CLEAN}" \
+        "PROJECT_DOMAIN" "${PROJECT_DOMAIN}" \
+        "TCP_SUBDOMAIN" "${TCP_SUBDOMAIN}" \
+        "STREAM_INTERNAL_PORT" "${STREAM_INTERNAL_PORT}" \
+        "PEER_IP" "${PEER_IP}" \
+        "STREAM_REMOTE_PORT" "${STREAM_REMOTE_PORT}"
     echo -e "${GREEN}[✓] Regla SNI creada:${NC} ${STREAM_MAP_FILE}"
     echo -e "${GREEN}[✓] Terminador TLS interno creado (puerto loopback 127.0.0.1:${STREAM_INTERNAL_PORT}):${NC} ${STREAM_CONF_FILE}"
 fi

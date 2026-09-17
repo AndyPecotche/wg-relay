@@ -9,17 +9,20 @@ certbot/logs/
 # Configuraciones generadas y llaves privadas de WireGuard
 wireguard/config/
 
-# Peers activos (mantener solo ejemplos .example en git)
+# Peers activos de WireGuard (ignorar configuraciones reales, mantener .gitkeep)
 wireguard/peers.d/*.conf
-!wireguard/peers.d/*.example
+wireguard/peers.d/*.conf.disabled
+!wireguard/peers.d/.gitkeep
 
-# Virtualhosts activos de Nginx (mantener solo ejemplos .example en git)
+# Virtualhosts y reglas SNI activas de Nginx (ignorar configuraciones reales, mantener .gitkeep y 00-base.map)
 nginx/conf.d/*.conf
-!nginx/conf.d/*.example
+nginx/conf.d/*.conf.disabled
+!nginx/conf.d/.gitkeep
 nginx/stream.d/*.conf
-!nginx/stream.d/*.example
+nginx/stream.d/*.conf.disabled
 nginx/stream.d/*.map
-!nginx/stream.d/*.example
+nginx/stream.d/*.map.disabled
+!nginx/stream.d/.gitkeep
 !nginx/stream.d/00-base.map
 
 # Archivos de sistema y editores

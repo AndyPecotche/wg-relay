@@ -90,23 +90,26 @@ wg-relay/
 ├── certbot/
 │   ├── cloudflare.ini.example          # Plantilla del Token de API de Cloudflare
 │   └── init-cert.sh                    # Script de solicitud inicial de certificado Wildcard
+├── templates/                          # 📁 Plantillas declarativas maestras para new-project.sh
+│   ├── wireguard/
+│   │   └── peer.conf.template          # Plantilla para peers modulares WireGuard
+│   └── nginx/
+│       ├── vhost.conf.template         # Plantilla L7 Ingress (VirtualHost HTTPS/HTTP)
+│       ├── sni.map.template            # Plantilla para reglas SNI en puerto 443
+│       └── terminator.conf.template    # Plantilla de terminador TLS L4 interno
 ├── nginx/
 │   ├── nginx.conf                      # Configuración base con SNI Preread Multiplexer en puerto 443
-│   ├── conf.d/
-│   │   └── proyecto1.conf.example      # Plantilla L7 Ingress: escucha en loopback 127.0.0.1:8443
-│   └── stream.d/
-│       ├── 00-base.map.example         # Mapa base para evitar fallos de include
-│       ├── proyecto1_tcp.map.example   # Mapeo SNI -> 127.0.0.1:10001
-│       └── proyecto1_tcp.conf.example  # Terminador TLS L4 hacia el peer WireGuard
+│   ├── conf.d/                         # VirtualHosts L7 activos generados dinámicamente (.gitkeep)
+│   └── stream.d/                       # Mapeos SNI y terminadores TLS activos (.gitkeep)
+│       └── 00-base.map                 # Mapa base para evitar fallos de include
 ├── wireguard/
 │   ├── assemble.sh                     # Compilador idempotente de peers y sync en caliente
 │   ├── templates/
 │   │   └── interface.conf              # Configuración base wg0 + reglas de firewall iptables
-│   └── peers.d/
-│       └── proyecto1.conf.example      # Plantilla modular de peer WireGuard (Proyecto 1)
+│   └── peers.d/                        # Peers WireGuard modulares activos (.gitkeep)
 ├── scripts/
-│   ├── new-project.sh                  # Asistente ALL-IN-ONE: autoasigna IP, crea L7, L4 stream, emite cert y recarga
-│   ├── add-peer.sh                     # Asistente individual para registrar peers WireGuard
+│   ├── new-project.sh                  # Asistente ALL-IN-ONE: autoasigna IP, compila templates, valida SSL y recarga
+│   ├── add-peer.sh                     # Asistente rápido para registrar peers WireGuard (reutiliza templates)
 │   └── reload.sh                       # Recarga en caliente sin downtime (Nginx + WireGuard)
 └── examples/
     └── client-project/                 # Plantilla completa para correr en el servidor local (CGNAT)
@@ -245,17 +248,17 @@ Para incorporar cualquier proyecto nuevo a la red y exponer sus servicios, solo 
 
 1. **Auto-asignación de IP en la VPN (`10.10.x.y`):**
    - Inspecciona los archivos existentes y asigna automáticamente la siguiente IP secuencial disponible (ej. `10.10.1.2`, `10.10.1.3`...).
-   - Genera las llaves criptográficas del cliente y crea el peer:
+   - Genera las llaves criptográficas del cliente y compila el peer desde `templates/wireguard/peer.conf.template`:
      `wireguard/peers.d/<IP>-<proyecto>.conf` (ej. `10.10.1.2-sensorhub.conf`).
 2. **Generación del Ingress L7 en Nginx:**
-   - Crea el archivo `nginx/conf.d/<IP>-<dominio>.conf` (ej. `10.10.1.2-sensorhub.andy.net.ar.conf`).
+   - Compila `templates/nginx/vhost.conf.template` generando `nginx/conf.d/<IP>-<dominio>.conf` (ej. `10.10.1.2-sensorhub.andy.net.ar.conf`).
    - Configura la regla comodín (`server_name <dominio> *.<dominio>`) delegando todo el tráfico HTTP/HTTPS hacia `http://<IP>:80` con preservación del encabezado `Host $host`.
 3. **Configuración Opcional de TCP Stream con TLS en Puerto 443 (MQTTS, DB, gRPC, Sockets):**
    - El script te pregunta si deseas habilitar un proxy TCP multiplexado por SNI para este proyecto.
    - De ser afirmativo, solicita el subdominio que usará tu servicio (ej. `mqtt.sensorhub.andy.net.ar` o `tcp.sensorhub.andy.net.ar`).
    - Solicita el puerto interno del contenedor/servicio remoto (ej. `1883` para MQTT o `5432` para PostgreSQL).
    - Asigna un puerto de loopback interno (`10001..20000`, ej. `10001`) que **nunca se expone públicamente**.
-   - Genera dos archivos:
+   - Compila desde `templates/nginx/sni.map.template` y `templates/nginx/terminator.conf.template`:
      - `nginx/stream.d/<IP>-<dominio>.map`: Regla SNI que redirige ese subdominio a `127.0.0.1:10001`.
      - `nginx/stream.d/<IP>-<dominio>.conf`: Terminador TLS interno que descifra el tráfico y lo envía vía WireGuard hacia `<IP>:<puerto_interno>`.
    - **Ventaja:** Tanto el tráfico Web (HTTPS) como el servicio TCP (MQTTS, gRPC) ingresan **por el mismo puerto 443**. ¡No requiere abrir puertos adicionales en ningún firewall!
