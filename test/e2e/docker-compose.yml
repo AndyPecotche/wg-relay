@@ -1,0 +1,47 @@
+# Entorno de prueba de punta a punta. Lo usa test/e2e/run.sh.
+name: wgrelay-e2e
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment: [POSTGRES_USER=wgrelay, POSTGRES_PASSWORD=wgrelay, POSTGRES_DB=wgrelay]
+    healthcheck: {test: ["CMD", "pg_isready", "-U", "wgrelay"], interval: 1s, retries: 30}
+
+  api:
+    image: wgrelay-api:dev
+    environment:
+      WGRELAY_DATABASE_URL: postgres://wgrelay:wgrelay@postgres/wgrelay
+      WGRELAY_BASE_DOMAIN: clients.e2e.test
+      WGRELAY_EDGE_HOST: edge.e2e.test
+    depends_on: {postgres: {condition: service_healthy}}
+
+  node:
+    image: wgrelay-node:dev
+    environment:
+      WGRELAY_API_URL: http://api:8080
+      WGRELAY_NODE_TOKEN: ${NODE_TOKEN:-}
+      WGRELAY_HTTPS_LISTEN: ":8443"
+      WGRELAY_HTTP_LISTEN: ":8080"
+      WGRELAY_DEBUG: "1"
+    ports: ["127.0.0.1:18443:8443", "127.0.0.1:18080:8080"]
+    profiles: [relay]
+
+  # Backend del "cliente": termina TLS él mismo (modo passthrough).
+  backend:
+    image: alpine:3.20
+    command: sh -c "apk add -q openssl && openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=backend -keyout /k -out /c -days 1 2>/dev/null && openssl s_server -quiet -accept 8883 -cert /c -key /k -www"
+    profiles: [relay]
+
+  agent:
+    image: wgrelay-agent:dev
+    environment:
+      WGRELAY_TOKEN: ${AGENT_TOKEN:-}
+      WGRELAY_DEBUG: "1"
+    volumes: ["./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"]
+    profiles: [relay]
+
+  agent2:
+    image: wgrelay-agent:dev
+    environment:
+      WGRELAY_TOKEN: ${AGENT_TOKEN:-}
+    volumes: ["./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"]
+    profiles: [standby]

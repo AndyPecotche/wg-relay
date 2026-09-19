@@ -1,0 +1,5 @@
+relay: http://api:8080
+routes:
+  - host: mqtt
+    mode: passthrough
+    to: backend:8883

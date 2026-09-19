@@ -1,7 +1,0 @@
-[Peer]
-# Proyecto: {{PROJECT_NAME}}
-# Dominio: {{PROJECT_DOMAIN}}
-# Fecha de creación: {{CREATION_DATE}}
-PublicKey = {{CLIENT_PUBKEY}}
-AllowedIPs = {{PEER_IP}}/32
-

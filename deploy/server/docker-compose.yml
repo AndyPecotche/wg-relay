@@ -1,0 +1,50 @@
+# Servidor principal: control plane (API + Postgres) + el primer nodo.
+# Instrucciones completas en docs/DEPLOY.md.
+name: wgrelay
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wgrelay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?definí POSTGRES_PASSWORD en .env}
+      POSTGRES_DB: wgrelay
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD", "pg_isready", "-U", "wgrelay"], interval: 2s, retries: 30}
+
+  api:
+    image: ghcr.io/andypecotche/wg-relay-api:${WGRELAY_VERSION:-latest}
+    build: {context: ../.., target: api}
+    restart: unless-stopped
+    environment:
+      WGRELAY_DATABASE_URL: postgres://wgrelay:${POSTGRES_PASSWORD}@postgres/wgrelay
+      WGRELAY_BASE_DOMAIN: ${WGRELAY_BASE_DOMAIN:?}
+      WGRELAY_EDGE_HOST: ${WGRELAY_EDGE_HOST:?}
+      WGRELAY_API_DOMAIN: ${WGRELAY_API_DOMAIN:?}
+      WGRELAY_ACME_EMAIL: ${WGRELAY_ACME_EMAIL:-}
+      WGRELAY_ACME_CA: ${WGRELAY_ACME_CA:-}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+    volumes: [apidata:/data]
+    depends_on: {postgres: {condition: service_healthy}}
+    # Sin puertos publicados: el tráfico HTTPS de la API entra por el nodo.
+
+  node:
+    image: ghcr.io/andypecotche/wg-relay-node:${WGRELAY_VERSION:-latest}
+    build: {context: ../.., target: node}
+    restart: unless-stopped
+    environment:
+      WGRELAY_API_URL: http://api:8080
+      WGRELAY_NODE_TOKEN: ${WGRELAY_NODE_TOKEN:-}
+      WGRELAY_LOCAL_ROUTES: ${WGRELAY_API_DOMAIN}=api:8443
+      WGRELAY_HTTPS_LISTEN: ":8443"
+      WGRELAY_HTTP_LISTEN: ":8080"
+    ports:
+      - "443:8443/tcp"
+      - "80:8080/tcp"
+      - "51820:51820/udp"
+    depends_on: [api]
+
+volumes:
+  pgdata:
+  apidata:

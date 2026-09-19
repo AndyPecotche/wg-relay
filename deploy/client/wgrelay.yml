@@ -1,0 +1,21 @@
+# Configuración del agente de wg-relay. Se puede versionar con el proyecto:
+# no contiene secretos. El token va en la variable WGRELAY_TOKEN.
+relay: https://api.wg-relay.andy.net.ar
+
+routes:
+  # passthrough: el TLS llega intacto al servicio, que lo termina él mismo.
+  # host relativo → mqtt.<tu-dominio-asignado>
+  - host: mqtt
+    mode: passthrough
+    to: emqx:8883
+
+  # proxy_protocol: true antepone un header PROXY v2 con la IP real del
+  # visitante. Activarlo solo si el servicio lo soporta (nginx, Caddy,
+  # HAProxy, Traefik, EMQX...); si no, la conexión falla.
+  - host: web
+    mode: passthrough
+    to: nginx:443
+    proxy_protocol: true
+
+  # Próximamente: mode: terminate (el agente saca el certificado y termina
+  # TLS por vos, reenviando HTTP plano al servicio).
