@@ -46,9 +46,12 @@ level=INFO msg="terminando TLS" hosts=influx.o67fzaw.clients.wg-relay.andy.net.a
 
 Una VM con Docker y una IPv4 pública: [docs/DEPLOY.md](docs/DEPLOY.md).
 
-## Cómo funciona
+## Documentación
 
-[docs/DESIGN.md](docs/DESIGN.md).
+- [docs/CASOS-DE-USO.md](docs/CASOS-DE-USO.md) — qué modo conviene en cada
+  situación, con ejemplos completos, y qué falta cubrir.
+- [docs/DESIGN.md](docs/DESIGN.md) — cómo funciona por dentro y por qué.
+- [docs/DEPLOY.md](docs/DEPLOY.md) — levantar el servicio.
 
 ```
 cmd/wgrelay-api     control plane + CLI de administración

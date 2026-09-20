@@ -221,6 +221,9 @@ lee el header PROXY, lee el SNI y busca el hostname en `wgrelay.yml` con el
 mismo criterio que el nodo (exacto primero, después comodines). Por eso una
 sola ruta `*` cubre todos los subdominios del cliente sin enumerarlos:
 
+Ver [CASOS-DE-USO.md](CASOS-DE-USO.md) para qué modo conviene en cada
+situación y qué falta cubrir.
+
 | Modo | Qué hace el agente | Estado |
 |---|---|---|
 | `passthrough` | Conecta al `to:` y reenvía el TLS intacto. El servicio termina TLS | ✅ F0 |
