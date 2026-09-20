@@ -304,9 +304,16 @@ proveedor DNS del cliente (§6.5).
 
 ### 6.2.1 Dominio asignado, DNS-01 delegado [F1b] ✅
 
-El agente no tiene ni puede tener acceso a la zona `clients.wg-relay...`: es
-nuestra. Por eso acá el DNS-01 lo resuelve **el control plane**, nunca el
-agente. El agente pide el certificado a Let's Encrypt y resuelve el challenge
+La zona `clients.wg-relay...` es nuestra, y el agente **no tiene** acceso a
+ella — no porque sea técnicamente imposible dárselo, sino porque no queremos:
+el token que la escribe hoy es de toda la zona `andy.net.ar` (§4.3), y ni
+siquiera con una zona dedicada (plan Enterprise) se puede acotar un token de
+Cloudflare a un solo registro. Repartir ese token entre todos los agentes
+volvería a cada uno capaz de reescribir el DNS de cualquier otro tunnel, o el
+de la propia API — rompe el aislamiento por tenant que ya es la base del
+diseño (decisión #12, §14). Por eso acá el DNS-01 lo resuelve **el control
+plane**, nunca el agente. El agente pide el certificado a Let's Encrypt y
+resuelve el challenge
 llamando a `POST /v1/agent/acme-dns` (que valida que el FQDN caiga dentro del
 dominio del tunnel autenticado, escribe el TXT en el proveedor DNS
 configurado —§4.3— y lo borra al terminar) mediante un proveedor `libdns`
