@@ -192,7 +192,7 @@ que todavía no soportamos).
 
 ---
 
-## 4. Escenario B — el usuario trae su propio dominio ❌ futuro (F3)
+## 4. Escenario B — el usuario trae su propio dominio ❌ futuro (F2)
 
 Alguien con `example.com` pero sin IP pública. Lo que va a tener que hacer:
 

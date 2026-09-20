@@ -58,8 +58,8 @@ privilegios, ni estado local.
                      │  · IPAM: IP de VPN + subdominio       │
                      │  · Leases de agentes                  │
                      │  · DNS (Cloudflare)                   │
-                     │  · ACME DNS-01 delegado        [F1]   │
-                     │  · Almacén cifrado de certs    [F1]   │
+                     │  · ACME DNS-01 delegado        [F1b]  │
+                     │  · Almacén cifrado de certs           │
                      │  · Estado → PostgreSQL                │
                      └──────────────┬────────────────────────┘
                                     │ long-poll de configuración
@@ -78,7 +78,7 @@ privilegios, ni estado local.
    │  · WireGuard userspace, clave en memoria   │
    │  · Despacho por SNI según wgrelay.yml      │
    │  · passthrough → servicio del usuario      │
-   │  · terminate   → TLS propio + HTTP   [F1]  │
+   │  · terminate   → TLS propio (HTTP y TCP)   │
    └────────────────────────────────────────────┘
 ```
 
@@ -127,7 +127,7 @@ Consecuencias:
 - **Nodo:** el router propio se reconfigura en caliente (tabla inmutable detrás
   de un `atomic.Pointer`), sin archivos ni reloads. nginx tampoco puede abrir
   puertos nuevos sin reload, bloqueante para los puertos dedicados futuros.
-- **Agente [F1]:** `certmagic` (la librería ACME de Caddy) + `httputil.ReverseProxy`
+- **Agente:** `certmagic` (la librería ACME de Caddy) + `httputil.ReverseProxy`
   dan TLS automático en un solo binario. Se pierde el surface de config de
   Caddy (compresión, headers, basic auth); la válvula de escape es apuntar
   una ruta `passthrough` al nginx/Caddy propio del usuario.
@@ -156,7 +156,7 @@ puede tener túnel con todos los nodos a la vez: cada nodo es un peer con
 | `api.wg-relay.andy.net.ar` | A → VM de la API | Admin, una vez |
 | `<sub>.clients.wg-relay.andy.net.ar` | CNAME → edge | API, al crear el tunnel |
 | `*.<sub>.clients.wg-relay.andy.net.ar` | CNAME → edge | API, al crear el tunnel |
-| `_acme-challenge.<sub>.clients...` | TXT, efímero | API, durante ACME [F1] |
+| `_acme-challenge.<sub>.clients...` | TXT, efímero | API, durante ACME [F1b] |
 
 Todos sin proxy de Cloudflare (nube gris). Los dominios son configurables
 (`WGRELAY_BASE_DOMAIN`, `WGRELAY_EDGE_HOST`, `WGRELAY_API_DOMAIN`); no hay
@@ -164,7 +164,7 @@ ninguno fijo en el código.
 
 **Los CNAME apuntan al edge, no a IPs.** Sumar o quitar un nodo es editar un
 solo registro A; los registros de clientes no cambian nunca. Los dominios
-propios de clientes [F3] apuntan al mismo edge.
+propios de clientes [F2] apuntan al mismo edge.
 
 > ⚠️ **No usar un comodín global `*.clients...`.** Por RFC 4592, al crear el
 > TXT de ACME bajo `<sub>`, el nombre `<sub>` pasa a existir como *empty
@@ -238,7 +238,7 @@ Hostname sin ruta → se cierra.
 El header PROXY v2 viaja siempre del nodo al agente. El agente lo reenvía al
 servicio **solo si la ruta tiene `proxy_protocol: true`**: un servicio que no
 lo espera (un broker MQTT sin configurar) interpretaría el header como basura
-y cortaría. En modo `terminate` [F1] el agente lo usa para `X-Forwarded-For`.
+y cortaría. En modo `terminate` el agente lo usa para `X-Forwarded-For`.
 
 ### 5.4 Puerto 80
 
@@ -330,7 +330,7 @@ Además de levantar el límite, aísla cookies entre clientes y evita que un
 cliente abusivo arrastre al dominio padre a las blocklists de Safe Browsing.
 Diferido por decisión explícita; el trámite tarda semanas.
 
-### 6.5 Dominio propio del cliente [F3]
+### 6.5 Dominio propio del cliente [F2]
 
 Para un hostname puntual en modo `terminate`, TLS-ALPN-01 a través del túnel
 alcanza igual que con el dominio asignado: cero configuración adicional.
@@ -567,10 +567,9 @@ al plan pago.
 | **F0** | DB, tokens, leases, túnel WG userspace, router SNI, passthrough, redirect :80, CLI de admin, DNS automático, e2e | ✅ |
 | **F1a** | Modo `terminate`: almacén cifrado de certs, TLS-ALPN-01, HTTP y TCP (`tcp://`) | ✅ |
 | **F1b** | ACME DNS-01 delegado (dominio asignado) y del lado del agente (dominio propio): certificados wildcard y `export_cert` | |
-| **F2** | Migrar SensorHub | |
-| **F3** | Dominios propios con verificación DNS | |
-| **F4** | Métricas y cuotas de tráfico; rate limiting de la API | |
-| — | Puertos TCP dedicados, UDP, panel web, PSL | Futuro |
+| **F2** | Dominios propios con verificación DNS | |
+| **F3** | Métricas y cuotas de tráfico; rate limiting de la API | |
+| — | Puertos TCP dedicados, UDP, autoservicio de registro (§16), PSL | Futuro |
 
 ---
 
