@@ -71,9 +71,25 @@ nameservers quedan afuera de lo delegado:
       ```
 
 > **`systemd-resolved` suele ocupar el `:53` del host.** Si `docker compose
-> up` falla al publicar `53:5300`, es casi siempre eso — es justamente por lo
-> que el contenedor escucha en `:5300` y se mapea al `53` público, no al
-> revés.
+> up` falla con `failed to bind host port 0.0.0.0:53: address already in
+> use`, es casi seguro esto (por eso el contenedor escucha en `:5300` y se
+> mapea al `53` público, no al revés). Confirmalo y arreglalo:
+> ```sh
+> sudo ss -tlnp sport = :53   # debería mostrar "systemd-resolve"
+> ```
+> Editá `/etc/systemd/resolved.conf`, sección `[Resolve]`, agregá
+> `DNSStubListener=no`. Antes de reiniciar, fijate que `/etc/resolv.conf` no
+> quede apuntando al stub que estás por apagar (suele ser un symlink a
+> `stub-resolv.conf`):
+> ```sh
+> sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+> sudo systemctl restart systemd-resolved
+> resolvectl status && ping -c1 google.com   # confirmá que el host sigue resolviendo
+> docker compose up -d --build
+> ```
+> Si después de esto seguís viendo el mismo error, revisá también que no
+> haya otro contenedor viejo (de otro stack en esta misma VPS) publicando el
+> `53`: `docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'`.
 
 Los dos caminos son independientes: podés tener ambos configurados a la vez
 (por ejemplo, mientras migrás de uno a otro), o ninguno.

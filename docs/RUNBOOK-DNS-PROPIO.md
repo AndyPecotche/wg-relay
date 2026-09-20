@@ -103,6 +103,31 @@ docker compose up -d --build
 docker compose logs api --tail 20   # sin errores de migración
 ```
 
+Si `docker compose up` falla con `failed to bind host port 0.0.0.0:53:
+address already in use`, es `systemd-resolved` ocupando el `:53` del host
+(muy común en Ubuntu) — por eso el contenedor escucha en `:5300` y se mapea
+al `53` público, no al revés. Arreglo:
+
+```sh
+sudo ss -tlnp sport = :53   # confirmá: debería aparecer "systemd-resolve"
+```
+
+Editá `/etc/systemd/resolved.conf`, sección `[Resolve]`, agregá
+`DNSStubListener=no`. Antes de reiniciar, `/etc/resolv.conf` suele ser un
+symlink a `stub-resolv.conf` (que deja de responder al apagar el stub) —
+apuntalo al resolv.conf real primero:
+
+```sh
+sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+sudo systemctl restart systemd-resolved
+resolvectl status && ping -c1 google.com   # confirmá que el host sigue resolviendo
+docker compose up -d --build
+```
+
+Si el error persiste y no es `systemd-resolve`, revisá que no haya otro
+contenedor viejo de otro stack en esta misma VPS publicando el `53`:
+`docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'`.
+
 Cargale la IP pública a tu nodo actual (iba a ser NULL si lo creaste antes
 de esta rama — sin esto, el nodo no entra en el set de IPs que se contesta):
 
@@ -329,6 +354,7 @@ llamara a ninguna API externa, y resolvió en el DNS público real.
 
 | Síntoma | Dónde mirar |
 |---|---|
+| `docker compose up` falla: `failed to bind host port 0.0.0.0:53` | `systemd-resolved` (`sudo ss -tlnp sport = :53`) — desactivar `DNSStubListener` en `/etc/systemd/resolved.conf` (ver Parte 2). Si no es eso, buscar otro contenedor viejo publicando el `53` |
 | `dig @127.0.0.1 -p 5300` no contesta nada | `docker compose logs node`: ¿arrancó el listener? ¿`WGRELAY_DNS_LISTEN` quedó comentado? |
 | Contesta localhost pero no desde afuera | Firewall del VPS (¿`53/udp` Y `53/tcp` abiertos? Pebble/ACME real también puede necesitar TCP) |
 | `NS` no trae nada / trae vacío | `WGRELAY_DNS_NS_NAMES` vacío en el `.env` de la API, o la API no se reinició después de setearlo |
