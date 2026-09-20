@@ -8,6 +8,7 @@ const (
 	ErrLeaseHeld    = "lease_held" // otra instancia del agente tiene el túnel
 	ErrSuperseded   = "superseded" // esta instancia perdió el lease
 	ErrBadRequest   = "bad_request"
+	ErrNotFound     = "not_found"
 	ErrInternal     = "internal"
 )
 
@@ -72,6 +73,18 @@ type NodeConfig struct {
 type Peer struct {
 	PublicKey string `json:"public_key"`
 	VPNIP     string `json:"vpn_ip"`
+}
+
+// StorageItem describe una clave del almacén del agente. El servidor guarda
+// los valores cifrados por el agente, así que solo conoce el tamaño y la fecha.
+type StorageItem struct {
+	Key       string `json:"key"`
+	Size      int64  `json:"size"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+type StorageList struct {
+	Items []StorageItem `json:"items"`
 }
 
 // Route asocia un hostname (exacto o "*.dominio") con la IP VPN de un agente.

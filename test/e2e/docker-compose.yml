@@ -23,6 +23,11 @@ services:
       WGRELAY_HTTP_LISTEN: ":8080"
       WGRELAY_DEBUG: "1"
     ports: ["127.0.0.1:18443:8443", "127.0.0.1:18080:8080"]
+    networks:
+      default:
+        # Pebble resuelve el hostname del tunnel por DNS de Docker y tiene que
+        # llegar al nodo, que es quien escucha el :8443.
+        aliases: ["${TERMINATE_HOST:-sin-configurar.invalid}"]
     profiles: [relay]
 
   # Backend del "cliente": termina TLS él mismo (modo passthrough).
@@ -31,17 +36,38 @@ services:
     command: sh -c "apk add -q openssl && openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=backend -keyout /k -out /c -days 1 2>/dev/null && openssl s_server -quiet -accept 8883 -cert /c -key /k -www"
     profiles: [relay]
 
+  # Servidor ACME de prueba. Valida TLS-ALPN-01 conectandose al :8443 del
+  # nodo, que es el mismo camino que recorre el trafico real.
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:latest
+    command: ["-config", "/test/config/pebble-config.json"]
+    environment: [PEBBLE_VA_NOSLEEP=1]
+    # El :15000 publica la raiz efimera con la que Pebble firma, para validar
+    # desde el host los certificados que emite.
+    ports: ["127.0.0.1:15000:15000"]
+    volumes: ["./pebble-config.json:/test/config/pebble-config.json:ro"]
+    profiles: [relay]
+
+  # Backend HTTP del cliente para el modo terminate.
+  webbackend:
+    image: traefik/whoami
+    profiles: [relay]
+
   agent:
     image: wgrelay-agent:dev
     environment:
       WGRELAY_TOKEN: ${AGENT_TOKEN:-}
       WGRELAY_DEBUG: "1"
-    volumes: ["./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"]
+    volumes:
+      - "./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"
+      - "./minica.pem:/pebble/minica.pem:ro"
     profiles: [relay]
 
   agent2:
     image: wgrelay-agent:dev
     environment:
       WGRELAY_TOKEN: ${AGENT_TOKEN:-}
-    volumes: ["./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"]
+    volumes:
+      - "./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"
+      - "./minica.pem:/pebble/minica.pem:ro"
     profiles: [standby]

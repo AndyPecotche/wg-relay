@@ -224,7 +224,7 @@ sola ruta `*` cubre todos los subdominios del cliente sin enumerarlos:
 | Modo | Qué hace el agente | Estado |
 |---|---|---|
 | `passthrough` | Conecta al `to:` y reenvía el TLS intacto. El servicio termina TLS | ✅ F0 |
-| `terminate` (default) | Termina TLS con su certificado y reenvía HTTP al `to:` | F1 |
+| `terminate` (default) | Termina TLS con su certificado y reenvía HTTP al `to:` | ✅ F1a |
 | `tcp` | Puerto dedicado en el nodo, sin TLS | Futuro |
 
 Hostname sin ruta → se cierra.
@@ -254,14 +254,28 @@ La API saca su propio certificado con TLS-ALPN-01 (`autocert`). El challenge
 llega por el `:443` público y el nodo lo reenvía a la API por ruta local sin
 tocar el TLS. No depende de Cloudflare.
 
-### 6.2 Dominio asignado, modo terminate [F1]
+### 6.2 Cómo obtiene el agente sus certificados
+
+En modo `terminate` alcanza con **TLS-ALPN-01**: el challenge llega al `:443`
+del nodo con el SNI del cliente, se rutea al agente como cualquier otra
+conexión y el agente lo responde. El control plane no participa. Es lo mismo
+que hace Caddy cuando se lo usa como terminador (ver
+`deploy/client/examples/caddy/`).
+
+DNS-01 delegado hace falta solo en dos casos:
+
+1. **Certificados wildcard**, que ACME nunca emite por HTTP-01 ni TLS-ALPN-01.
+2. **Hostnames en modo `passthrough`**, donde el challenge no llega al agente
+   porque la conexión va derecho al servicio del usuario.
+
+### 6.2.1 Dominio asignado, DNS-01 delegado [F1b]
 
 El agente pide el certificado a Let's Encrypt y resuelve DNS-01 llamando a la
 API, que escribe el TXT en Cloudflare (solo dentro de la zona del tunnel
 autenticado) y lo borra al terminar. Soporta **wildcard** y es independiente
 del data plane.
 
-### 6.3 Almacenamiento de certificados sin volumen [F1]
+### 6.3 Almacenamiento de certificados sin volumen
 
 El agente no tiene disco, pero **no puede sacar un certificado nuevo en cada
 arranque**: Let's Encrypt permite solo 5 certificados idénticos por semana.
@@ -282,6 +296,11 @@ La API solo tiene el hash SHA-256 del token, así que no puede derivar la
 clave ni leer lo que guarda. Al reiniciar, el agente descarga y descifra.
 Rotar el token vuelve ilegible lo guardado: el agente simplemente emite
 certificados nuevos (evento raro, dentro de la cuota).
+
+El nombre de la clave va como dato autenticado del AES-GCM, así que un blob no
+puede moverse de una clave a otra sin que el descifrado falle. El `Locker` que
+pide certmagic es local al proceso: el lease (§7.3) ya garantiza que solo hay
+una instancia del agente operando el tunnel.
 
 ### 6.4 Límite de Let's Encrypt
 
@@ -383,7 +402,8 @@ reemplazar la fila. `agent_lease.wg_pubkey UNIQUE` impide que un agente
 registre la clave de otro. Migraciones embebidas en el binario, aplicadas al
 arrancar con un advisory lock (seguro con varias réplicas).
 
-[F1] `agent_storage (tunnel_id, name, blob, updated_at)` para §6.3.
+`agent_storage (tunnel_id, key, value, updated_at)` guarda el material ACME
+cifrado del agente (§6.3). Para el control plane son bytes opacos.
 
 ---
 
@@ -496,7 +516,8 @@ al plan pago.
 | Fase | Entrega | Estado |
 |---|---|---|
 | **F0** | DB, tokens, leases, túnel WG userspace, router SNI, passthrough, redirect :80, CLI de admin, DNS automático, e2e | ✅ |
-| **F1** | Modo `terminate`: ACME DNS-01 delegado, almacén cifrado de certs, `export_cert` | |
+| **F1a** | Modo `terminate`: almacén cifrado de certs + TLS-ALPN-01 a través del túnel | ✅ |
+| **F1b** | ACME DNS-01 delegado: certificados wildcard y `export_cert` para passthrough | |
 | **F2** | Migrar SensorHub | |
 | **F3** | Dominios propios con verificación DNS | |
 | **F4** | Métricas y cuotas de tráfico; rate limiting de la API | |

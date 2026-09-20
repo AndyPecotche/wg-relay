@@ -7,6 +7,8 @@ relay vea tu tráfico**: el TLS llega intacto a tu servidor.
 - Ruteo por SNI en el puerto 443: HTTPS, MQTTS, Postgres/TLS, gRPC…
 - Túnel WireGuard en espacio de usuario: el agente no necesita root ni
   privilegios.
+- Certificados automáticos: el agente los obtiene y renueva solo, y los guarda
+  cifrados en el servidor con una clave que el servicio no conoce.
 - Del lado del cliente: un token y un archivo de configuración. Nada más.
 
 ## Usarlo (cliente)
@@ -14,8 +16,13 @@ relay vea tu tráfico**: el TLS llega intacto a tu servidor.
 ```yaml
 # wgrelay.yml — se puede commitear, no tiene secretos
 relay: https://api.wg-relay.andy.net.ar
+acme:
+  email: vos@ejemplo.com
 routes:
-  - host: mqtt            # → mqtt.<tu-dominio-asignado>
+  - host: influx          # → https://influx.<tu-dominio-asignado>
+    to: http://influxdb:8086      # el agente saca el certificado solo
+
+  - host: mqtt            # TLS intacto hasta tu servicio
     mode: passthrough
     to: emqx:8883
 ```
@@ -27,9 +34,12 @@ docker compose up -d                     # ver deploy/client/
 
 ```
   Dominio:  o67fzaw.clients.wg-relay.andy.net.ar
-  mqtt.o67fzaw.clients.wg-relay.andy.net.ar:443  →  emqx:8883  (passthrough)
+
+  influx.o67fzaw.clients.wg-relay.andy.net.ar:443  →  http://influxdb:8086  (terminate)
+  mqtt.o67fzaw.clients.wg-relay.andy.net.ar:443    →  emqx:8883  (passthrough)
 
 level=INFO msg="túnel establecido" nodo=node1
+level=INFO msg="terminando TLS" hosts=influx.o67fzaw.clients.wg-relay.andy.net.ar
 ```
 
 ## Hospedarlo

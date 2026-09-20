@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -49,6 +50,31 @@ func Code(err error) string {
 
 // ErrNotModified se devuelve ante un 304 (long-poll sin cambios).
 var ErrNotModified = errors.New("sin cambios")
+
+// Raw hace una petición con cuerpo binario y devuelve el cuerpo y los headers
+// de la respuesta. Lo usa el almacén de certificados del agente.
+func (c *Client) Raw(ctx context.Context, method, path string, body []byte) ([]byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		var pe proto.Error
+		if json.NewDecoder(resp.Body).Decode(&pe) != nil {
+			pe = proto.Error{Code: proto.ErrInternal, Message: resp.Status}
+		}
+		return nil, resp.Header, &Error{Status: resp.StatusCode, Code: pe.Code, Message: pe.Message}
+	}
+	out, err := io.ReadAll(resp.Body)
+	return out, resp.Header, err
+}
 
 func (c *Client) Do(ctx context.Context, method, path string, in, out any) error {
 	var body bytes.Buffer

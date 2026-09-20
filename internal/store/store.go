@@ -350,6 +350,60 @@ func (s *Store) NodeConfig(ctx context.Context, baseDomain string) (proto.NodeCo
 	return cfg, nil
 }
 
+// ------------------------------------------------- almacén del agente
+
+type StorageItem struct {
+	Key       string
+	Size      int64
+	UpdatedAt time.Time
+}
+
+func (s *Store) StoragePut(ctx context.Context, tunnelID int64, key string, value []byte) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO agent_storage(tunnel_id, key, value) VALUES ($1, $2, $3)
+		ON CONFLICT (tunnel_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+		tunnelID, key, value)
+	return err
+}
+
+func (s *Store) StorageGet(ctx context.Context, tunnelID int64, key string) ([]byte, time.Time, error) {
+	var value []byte
+	var updated time.Time
+	err := s.db.QueryRow(ctx, `SELECT value, updated_at FROM agent_storage WHERE tunnel_id = $1 AND key = $2`,
+		tunnelID, key).Scan(&value, &updated)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, time.Time{}, ErrNotFound
+	}
+	return value, updated, err
+}
+
+func (s *Store) StorageDelete(ctx context.Context, tunnelID int64, key string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM agent_storage WHERE tunnel_id = $1 AND key = $2`, tunnelID, key)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// StorageList devuelve todas las claves bajo un prefijo. El agente se encarga
+// de recortarlas si pidió un listado no recursivo.
+func (s *Store) StorageList(ctx context.Context, tunnelID int64, prefix string) ([]StorageItem, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT key, length(value), updated_at FROM agent_storage
+		WHERE tunnel_id = $1 AND starts_with(key, $2) ORDER BY key`,
+		tunnelID, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (StorageItem, error) {
+		var it StorageItem
+		return it, r.Scan(&it.Key, &it.Size, &it.UpdatedAt)
+	})
+}
+
 func offsetAddr(p netip.Prefix, off int64) (netip.Addr, error) {
 	if off <= 0 || off >= 1<<(32-p.Bits()) {
 		return netip.Addr{}, fmt.Errorf("pool de IPs %s agotado", p)

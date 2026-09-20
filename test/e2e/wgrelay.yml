@@ -1,4 +1,11 @@
 relay: http://api:8080
+
+# CA de prueba (Pebble) en vez de Let's Encrypt.
+acme:
+  email: e2e@test
+  ca: https://pebble:14000/dir
+  trusted_roots: /pebble/minica.pem
+
 routes:
   - host: mqtt
     mode: passthrough
@@ -7,3 +14,6 @@ routes:
   - host: "*.dev"
     mode: passthrough
     to: backend:8883
+  # terminate: el agente saca el certificado y proxea HTTP al servicio.
+  - host: web
+    to: http://webbackend:80

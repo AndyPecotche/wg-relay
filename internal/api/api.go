@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/agent/register", s.agent(s.register))
 	mux.HandleFunc("POST /v1/agent/heartbeat", s.agent(s.heartbeat))
 	mux.HandleFunc("POST /v1/agent/release", s.agent(s.release))
+	mux.HandleFunc("GET /v1/agent/storage", s.agent(s.storageList))
+	mux.HandleFunc("GET /v1/agent/storage/{key...}", s.agent(s.storageGet))
+	mux.HandleFunc("HEAD /v1/agent/storage/{key...}", s.agent(s.storageGet))
+	mux.HandleFunc("PUT /v1/agent/storage/{key...}", s.agent(s.storagePut))
+	mux.HandleFunc("DELETE /v1/agent/storage/{key...}", s.agent(s.storageDelete))
 	mux.HandleFunc("POST /v1/node/hello", s.node(s.nodeHello))
 	mux.HandleFunc("GET /v1/node/config", s.node(s.nodeConfig))
 	return mux
@@ -120,6 +127,94 @@ func (s *Server) release(w http.ResponseWriter, r *http.Request, t store.Tunnel)
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ------------------------------------------------- almacén del agente
+//
+// Es un key-value opaco por tunnel: el agente guarda acá su material ACME
+// cifrado con una clave derivada de su token, de la que el servidor solo tiene
+// el hash. Sin esto el agente pediría certificados nuevos en cada arranque.
+
+const maxStorageValue = 1 << 20 // 1 MiB por clave
+
+func storageKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	key := r.PathValue("key")
+	if key == "" || len(key) > 512 || strings.Contains(key, "..") {
+		writeErr(w, http.StatusBadRequest, proto.ErrBadRequest, "clave inválida")
+		return "", false
+	}
+	return key, true
+}
+
+func (s *Server) storageGet(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
+	key, ok := storageKey(w, r)
+	if !ok {
+		return
+	}
+	value, updated, err := s.Store.StorageGet(r.Context(), t.ID, key)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, proto.ErrNotFound, "clave inexistente")
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(len(value)))
+	w.Header().Set("Last-Modified", updated.UTC().Format(http.TimeFormat))
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.Write(value)
+}
+
+func (s *Server) storagePut(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
+	key, ok := storageKey(w, r)
+	if !ok {
+		return
+	}
+	value, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxStorageValue))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, proto.ErrBadRequest, "cuerpo demasiado grande")
+		return
+	}
+	if err := s.Store.StoragePut(r.Context(), t.ID, key, value); err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) storageDelete(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
+	key, ok := storageKey(w, r)
+	if !ok {
+		return
+	}
+	err := s.Store.StorageDelete(r.Context(), t.ID, key)
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, proto.ErrNotFound, "clave inexistente")
+		return
+	}
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) storageList(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
+	items, err := s.Store.StorageList(r.Context(), t.ID, r.URL.Query().Get("prefix"))
+	if err != nil {
+		s.fail(w, err)
+		return
+	}
+	out := proto.StorageList{Items: make([]proto.StorageItem, len(items))}
+	for i, it := range items {
+		out.Items[i] = proto.StorageItem{Key: it.Key, Size: it.Size, UpdatedAt: it.UpdatedAt.UTC().Format(time.RFC3339Nano)}
+	}
+	writeJSON(w, out)
+}
+
 // ---------------------------------------------------------------- nodos
 
 type nodeHandler func(w http.ResponseWriter, r *http.Request, n store.Node)
@@ -201,6 +296,8 @@ func (s *Server) fail(w http.ResponseWriter, err error) {
 		writeErr(w, http.StatusConflict, proto.ErrLeaseHeld, err.Error())
 	case errors.Is(err, store.ErrSuperseded):
 		writeErr(w, http.StatusConflict, proto.ErrSuperseded, err.Error())
+	case errors.Is(err, store.ErrNotFound):
+		writeErr(w, http.StatusNotFound, proto.ErrNotFound, err.Error())
 	case errors.Is(err, store.ErrPubkeyInUse):
 		writeErr(w, http.StatusBadRequest, proto.ErrBadRequest, err.Error())
 	default:

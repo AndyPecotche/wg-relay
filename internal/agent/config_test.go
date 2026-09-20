@@ -32,16 +32,27 @@ routes:
 
 func TestLoadFileErrors(t *testing.T) {
 	cases := map[string]string{
-		"token":     "token: wgr_x_y\n",
-		"terminate": "routes:\n  - host: web\n    to: web:80\n",
-		"to":        "routes:\n  - host: x\n    mode: passthrough\n    to: sinpuerto\n",
-		"desconoc":  "routes:\n  - host: x\n    mode: raro\n    to: a:1\n",
+		"token":    "token: wgr_x_y\n",
+		"URL http": "routes:\n  - host: web\n    to: ftp://web\n",
+		"to":       "routes:\n  - host: x\n    mode: passthrough\n    to: sinpuerto\n",
+		"desconoc": "routes:\n  - host: x\n    mode: raro\n    to: a:1\n",
 	}
 	for want, body := range cases {
 		_, err := LoadFile(write(t, body))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: err = %v", want, err)
 		}
+	}
+}
+
+// terminate es el modo por defecto y su destino se normaliza a una URL.
+func TestLoadFileTerminate(t *testing.T) {
+	f, err := LoadFile(write(t, "routes:\n  - host: influx\n    to: influxdb:8086\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Routes[0].Mode != ModeTerminate || f.Routes[0].To != "http://influxdb:8086" {
+		t.Fatalf("modo=%q to=%q", f.Routes[0].Mode, f.Routes[0].To)
 	}
 }
 

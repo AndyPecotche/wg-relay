@@ -38,6 +38,7 @@ type Config struct {
 type Agent struct {
 	cfg      Config
 	api      *apiclient.Client
+	storage  *storage
 	instance string
 	log      *slog.Logger
 }
@@ -46,12 +47,19 @@ type Agent struct {
 type ErrFatal struct{ error }
 
 func Run(ctx context.Context, cfg Config) error {
-	if _, err := auth.Parse(cfg.Token, auth.PrefixAgent); err != nil {
+	tok, err := auth.Parse(cfg.Token, auth.PrefixAgent)
+	if err != nil {
 		return ErrFatal{fmt.Errorf("WGRELAY_TOKEN: %w", err)}
+	}
+	api := apiclient.New(cfg.File.Relay, cfg.Token)
+	st, err := newStorage(api, tok)
+	if err != nil {
+		return ErrFatal{err}
 	}
 	a := &Agent{
 		cfg:      cfg,
-		api:      apiclient.New(cfg.File.Relay, cfg.Token),
+		api:      api,
+		storage:  st,
 		instance: auth.Random(10),
 		log:      cfg.Log,
 	}
@@ -89,6 +97,14 @@ func (a *Agent) session(ctx context.Context) error {
 	defer wg.Close()
 
 	t := &tunnel{agent: a, wg: wg, routes: routes, domain: reg.Domain}
+	// Las rutas terminate necesitan certificado: se piden en segundo plano,
+	// así que un fallo de ACME no impide que el resto del túnel funcione.
+	term, err := newTerminator(ctx, routes, a.storage, a.cfg.File.ACME, a.log)
+	if err != nil {
+		return ErrFatal{err}
+	}
+	defer term.close()
+	t.term = term
 	if err := t.setNodes(ctx, reg.Nodes); err != nil {
 		a.log.Warn("configurando nodos", "err", err)
 	}
@@ -181,6 +197,7 @@ type tunnel struct {
 	wg     *wgnet.Net
 	routes map[string]RouteSpec
 	domain string
+	term   *terminator
 
 	mu        sync.Mutex
 	nodes     map[wgnet.Key]proto.Node
@@ -325,6 +342,13 @@ func (t *tunnel) handle(c net.Conn) {
 	if !ok {
 		log.Debug("hostname sin ruta en wgrelay.yml", "host", host, "cliente", src)
 		c.Close()
+		return
+	}
+	if route.Mode == ModeTerminate {
+		// El TLS lo termina el agente: la conexión pasa al servidor HTTPS
+		// interno, con la IP real del visitante ya puesta.
+		log.Debug("conexión (terminate)", "host", host, "cliente", src, "to", route.To)
+		t.term.handle(addrConn{Conn: conn, remote: net.TCPAddrFromAddrPort(src)})
 		return
 	}
 	up, err := net.DialTimeout("tcp", route.To, 5*time.Second)

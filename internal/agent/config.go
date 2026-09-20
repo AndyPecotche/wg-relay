@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -15,7 +16,30 @@ import (
 // proyecto del usuario: no contiene secretos (el token va por WGRELAY_TOKEN).
 type File struct {
 	Relay  string      `yaml:"relay"`
+	ACME   ACME        `yaml:"acme"`
 	Routes []RouteSpec `yaml:"routes"`
+}
+
+// ACME configura la obtención de certificados para las rutas en modo terminate.
+type ACME struct {
+	// Email de contacto para la CA. Opcional, pero recomendado: es por donde
+	// Let's Encrypt avisa si un certificado está por vencer sin renovarse.
+	Email string `yaml:"email"`
+	// CA alternativa. Para probar sin gastar cuota:
+	// https://acme-staging-v02.api.letsencrypt.org/directory
+	CA string `yaml:"ca"`
+	// Ruta a un PEM con las raíces que se confían al hablar con la CA. Solo
+	// hace falta con una CA privada (step-ca, Pebble, PKI interna).
+	TrustedRoots string `yaml:"trusted_roots"`
+}
+
+const LetsEncryptProduction = "https://acme-v02.api.letsencrypt.org/directory"
+
+func (a ACME) CAOrDefault() string {
+	if a.CA != "" {
+		return a.CA
+	}
+	return LetsEncryptProduction
 }
 
 type RouteSpec struct {
@@ -56,12 +80,20 @@ func LoadFile(path string) (File, error) {
 		case r.Host == "":
 			return File{}, fmt.Errorf("ruta %d: falta host", i+1)
 		case r.Mode == ModeTerminate:
-			return File{}, fmt.Errorf("ruta %q: el modo terminate todavía no está implementado; usá mode: passthrough", r.Host)
-		case r.Mode != ModePassthrough:
+			// En terminate el destino es una URL: el agente habla HTTP con él.
+			if !strings.Contains(r.To, "://") {
+				r.To = "http://" + r.To
+			}
+			u, err := url.Parse(r.To)
+			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+				return File{}, fmt.Errorf("ruta %q: to debe ser una URL http(s), por ejemplo http://influxdb:8086", r.Host)
+			}
+		case r.Mode == ModePassthrough:
+			if _, _, err := net.SplitHostPort(r.To); err != nil {
+				return File{}, fmt.Errorf("ruta %q: to debe ser host:puerto (%v)", r.Host, err)
+			}
+		default:
 			return File{}, fmt.Errorf("ruta %q: modo %q desconocido", r.Host, r.Mode)
-		}
-		if _, _, err := net.SplitHostPort(r.To); err != nil {
-			return File{}, fmt.Errorf("ruta %q: to debe ser host:puerto (%v)", r.Host, err)
 		}
 	}
 	return f, nil

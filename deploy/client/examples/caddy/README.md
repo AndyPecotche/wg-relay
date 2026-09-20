@@ -74,6 +74,11 @@ mensajes que no mencionan SNI por ningún lado ("socket disconnected before
 secure TLS connection was established" en Node.js, `UNEXPECTED_EOF_WHILE_READING`
 en OpenSSL). El cliente MQTT de Postman, por ejemplo, no lo manda.
 
+**mosquitto necesita `--cafile` o `--capath` para activar TLS.** Sin uno de
+los dos manda MQTT en texto plano al 443; el nodo lo intenta leer como un
+ClientHello, falla y corta. El síntoma es el cliente reintentando en bucle,
+que parece un problema del servidor y no lo es.
+
 **Con la CA de staging, `--insecure` no alcanza.** En mosquitto solo desactiva
 la verificación del hostname, no la de la cadena, así que el certificado de
 staging igual se rechaza con `certificate verify failed`. Para probar contra
@@ -86,7 +91,8 @@ mosquitto_sub -h mqtt.<dominio> -p 443 --cafile letsencrypt-stg-root-x1.pem -t '
 
 > Mientras probás, descomentá `ACME_CA` en `.env` para usar la CA de staging
 > de Let's Encrypt y no gastar cuota. Los certificados no serán confiables
-> (el navegador advierte; `mosquitto_sub` necesita `--insecure`). Al pasar a
+> (el navegador advierte, y `mosquitto_sub` necesita `--cafile` con la raíz de
+> staging, como se explica arriba). Al pasar a
 > producción, comentá esa línea y borrá el volumen: `docker compose down -v`.
 
 ## Adaptarlo a tu stack
