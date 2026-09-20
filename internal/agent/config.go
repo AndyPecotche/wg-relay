@@ -20,7 +20,8 @@ type File struct {
 
 type RouteSpec struct {
 	// Host relativo al dominio asignado ("mqtt" → mqtt.<dominio>), "@" para el
-	// dominio mismo, o un FQDN que caiga dentro del dominio asignado.
+	// dominio mismo, "*" para todo lo demás, o un FQDN (o comodín "*.x") que
+	// caiga dentro del dominio asignado.
 	Host          string `yaml:"host"`
 	Mode          string `yaml:"mode"` // passthrough | terminate
 	To            string `yaml:"to"`   // host:puerto alcanzable desde el agente
@@ -71,6 +72,20 @@ func Resolve(specs []RouteSpec, domain string) (map[string]RouteSpec, error) {
 	out := make(map[string]RouteSpec, len(specs))
 	for _, r := range specs {
 		h := strings.ToLower(strings.TrimSuffix(r.Host, "."))
+		// "@" es el dominio mismo; un nombre sin puntos es relativo a él; con
+		// puntos se toma como FQDN y tiene que caer dentro del dominio. La
+		// misma regla vale para comodines: "*" y "*.dev" son relativos.
+		star := ""
+		switch {
+		case h == "*":
+			star, h = "*.", domain
+		case strings.HasPrefix(h, "*."):
+			if rest := h[2:]; rest == "" || rest == "@" {
+				return nil, fmt.Errorf("ruta %q: comodín inválido", r.Host)
+			} else {
+				star, h = "*.", rest
+			}
+		}
 		switch {
 		case h == "@":
 			h = domain
@@ -79,6 +94,7 @@ func Resolve(specs []RouteSpec, domain string) (map[string]RouteSpec, error) {
 		case h != domain && !strings.HasSuffix(h, "."+domain):
 			return nil, fmt.Errorf("ruta %q: no pertenece al dominio asignado %s (dominios propios: próximamente)", r.Host, domain)
 		}
+		h = star + h
 		if _, dup := out[h]; dup {
 			return nil, fmt.Errorf("ruta %q duplicada", h)
 		}

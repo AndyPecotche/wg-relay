@@ -1,0 +1,40 @@
+name: wgrelay-caddy
+services:
+  wgrelay:
+    image: ghcr.io/andypecotche/wg-relay-agent:${WGRELAY_VERSION:-latest}
+    restart: unless-stopped
+    environment:
+      WGRELAY_TOKEN: ${WGRELAY_TOKEN:?definí WGRELAY_TOKEN en .env}
+    volumes:
+      - ./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro
+
+  caddy:
+    build: .
+    image: wgrelay-caddy:local
+    restart: unless-stopped
+    environment:
+      WGRELAY_DOMAIN: ${WGRELAY_DOMAIN:?levantá primero "docker compose up wgrelay" y copiá el dominio a .env}
+      ACME_EMAIL: ${ACME_EMAIL:?}
+      ACME_CA: ${ACME_CA:-https://acme-v02.api.letsencrypt.org/directory}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Los certificados viven acá: este volumen SÍ tiene que persistir, o
+      # Caddy pediría certificados nuevos en cada arranque y chocaría con el
+      # límite de Let's Encrypt (5 idénticos por semana).
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # ---- Servicios de ejemplo: "docker compose --profile demo up" -------------
+  # En tu stack, reemplazalos por los tuyos (ver README).
+  broker:
+    profiles: [demo]
+    image: eclipse-mosquitto:2
+    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
+
+  dashboard:
+    profiles: [demo]
+    image: traefik/whoami
+
+volumes:
+  caddy_data:
+  caddy_config:

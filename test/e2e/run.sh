@@ -30,31 +30,35 @@ echo "1. passthrough por SNI hasta el backend"
 wait_ok || fail "no llegó al backend"
 echo "   ok"
 
-echo "2. hostname sin ruta se corta sin respuesta"
+echo "2. una ruta comodin cubre subdominios no enumerados"
+probe "loquesea.dev.$DOMAIN" | grep -q 's_server' || fail "el comodin no ruteo"
+echo "   ok"
+
+echo "3. hostname sin ruta se corta sin respuesta"
 [ -z "$(probe "otro.$DOMAIN" || true)" ] || fail "respondió un host sin ruta"
 [ -z "$(probe "nada.clients.e2e.test" || true)" ] || fail "respondió un tunnel inexistente"
 echo "   ok"
 
-echo "3. puerto 80 redirige hosts conocidos y corta el resto"
+echo "4. puerto 80 redirige hosts conocidos y corta el resto"
 loc=$(curl -s -o /dev/null -w '%{redirect_url}' -H "Host: mqtt.$DOMAIN" http://127.0.0.1:18080/x)
 [ "$loc" = "https://mqtt.$DOMAIN/x" ] || fail "redirect = $loc"
 curl -s --max-time 3 -H "Host: desconocido.test" http://127.0.0.1:18080/ && fail "respondió host desconocido" || true
 echo "   ok"
 
-echo "4. una segunda instancia con el mismo token queda en espera"
+echo "5. una segunda instancia con el mismo token queda en espera"
 dc --profile standby up -d agent2 >/dev/null
 sleep 3
 dc logs agent2 | grep -q 'otra instancia' || fail "agent2 no quedó en espera"
 probe "mqtt.$DOMAIN" | grep -q s_server || fail "agent2 le robó el túnel al primero"
 echo "   ok"
 
-echo "5. al detener la primera, la segunda toma el túnel"
+echo "6. al detener la primera, la segunda toma el túnel"
 dc stop agent >/dev/null
 wait_ok || fail "agent2 no tomó el túnel"
 dc logs agent2 | grep -q 'Dominio:' || fail "agent2 no registró"
 echo "   ok"
 
-echo "6. rotar el token desconecta al agente"
+echo "7. rotar el token desconecta al agente"
 dc exec -T api wgrelay-api tunnel rotate-token --id 1 >/dev/null
 for i in $(seq 1 25); do dc ps agent2 --status exited | grep -q agent2 && break; sleep 1; done
 dc logs agent2 | grep -q 'rechazó el token' || fail "agent2 no detectó el token rotado"

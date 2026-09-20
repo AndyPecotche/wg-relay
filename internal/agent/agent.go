@@ -319,7 +319,9 @@ func (t *tunnel) handle(c net.Conn) {
 		c.Close()
 		return
 	}
-	route, ok := t.routes[host]
+	// Match exacto primero y después comodines, igual que en el nodo: así una
+	// ruta "*" cubre todos los subdominios sin enumerarlos.
+	route, ok := sni.Match(t.routes, host)
 	if !ok {
 		log.Debug("hostname sin ruta en wgrelay.yml", "host", host, "cliente", src)
 		c.Close()

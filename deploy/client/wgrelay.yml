@@ -17,5 +17,13 @@ routes:
     to: nginx:443
     proxy_protocol: true
 
+  # Comodines: "*" cubre todos los subdominios sin enumerarlos, y "@" es el
+  # dominio raíz. El match exacto gana sobre el comodín, así que se puede
+  # mandar todo a un proxy y desviar una excepción a otro puerto:
+  #   - host: "*"
+  #     mode: passthrough
+  #     to: caddy:443
+  # Ver examples/caddy/ para un stack completo con certificados automáticos.
+
   # Próximamente: mode: terminate (el agente saca el certificado y termina
   # TLS por vos, reenviando HTTP plano al servicio).

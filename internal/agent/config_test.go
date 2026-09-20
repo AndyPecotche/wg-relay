@@ -63,3 +63,28 @@ func TestResolve(t *testing.T) {
 		t.Error("debería rechazar duplicados")
 	}
 }
+
+func TestResolveWildcard(t *testing.T) {
+	d := "abc.clients.example.com"
+	got, err := Resolve([]RouteSpec{{Host: "*"}, {Host: "mqtt"}, {Host: "*.dev." + d}, {Host: "*.stage"}}, d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range []string{"*." + d, "mqtt." + d, "*.dev." + d, "*.stage." + d} {
+		if _, ok := got[h]; !ok {
+			t.Errorf("falta %s en %v", h, got)
+		}
+	}
+	if _, err := Resolve([]RouteSpec{{Host: "*.ajeno.com"}}, d); err == nil {
+		t.Error("debería rechazar un comodín fuera del dominio")
+	}
+}
+
+func TestResolveWildcardErrors(t *testing.T) {
+	d := "abc.clients.example.com"
+	for _, h := range []string{"*.@", "*.ajeno.com"} {
+		if _, err := Resolve([]RouteSpec{{Host: h}}, d); err == nil {
+			t.Errorf("Resolve(%q) debería fallar", h)
+		}
+	}
+}

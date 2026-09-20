@@ -1,0 +1,73 @@
+{
+	email {$ACME_EMAIL}
+	acme_ca {$ACME_CA:https://acme-v02.api.letsencrypt.org/directory}
+
+	# layer4 se queda con el :443, porque es quien decide qué conexión es HTTP
+	# y cuál es MQTT. El servidor web de Caddy se corre a un puerto interno.
+	https_port 8443
+	auto_https disable_redirects
+
+	# Los certificados se validan con TLS-ALPN-01, que viaja intacto por el
+	# túnel hasta acá. HTTP-01 no sirve: el :80 del nodo solo redirige.
+	cert_issuer acme {
+		disable_http_challenge
+	}
+
+	# El agente antepone un header PROXY v2 con la IP real del visitante
+	# (porque la ruta tiene proxy_protocol: true en wgrelay.yml).
+	servers {
+		listener_wrappers {
+			proxy_protocol {
+				allow 127.0.0.1/32
+			}
+			tls
+		}
+	}
+
+	layer4 {
+		:443 {
+			route {
+				# 1. Consumir el header PROXY que puso el agente.
+				proxy_protocol
+
+				subroute {
+					# 2. Los challenges de Let's Encrypt van SIEMPRE al servidor
+					#    web, aunque el SNI sea el de MQTT. Sin esta regla,
+					#    mqtt.<dominio> nunca podría sacar su certificado.
+					@acme tls alpn acme-tls/1
+					route @acme {
+						proxy 127.0.0.1:8443
+					}
+
+					# 3. MQTT nativo sobre TLS: Caddy termina el TLS con el
+					#    certificado de mqtt.<dominio> y entrega MQTT plano.
+					@mqtt tls sni mqtt.{$WGRELAY_DOMAIN}
+					route @mqtt {
+						tls
+						proxy broker:1883
+					}
+
+					# 4. Todo lo demás, al servidor web de Caddy.
+					route {
+						proxy {
+							upstream 127.0.0.1:8443
+							proxy_protocol v2
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+# ---------------------------------------------------------------- sitios web
+
+app.{$WGRELAY_DOMAIN} {
+	reverse_proxy dashboard:80
+}
+
+# Este bloque no sirve tráfico: existe para que Caddy gestione el certificado
+# de mqtt.<dominio>, que después usa el terminador TLS de layer4 de arriba.
+mqtt.{$WGRELAY_DOMAIN} {
+	respond "Este host solo acepta MQTT sobre TLS." 421
+}

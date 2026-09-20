@@ -3,3 +3,7 @@ routes:
   - host: mqtt
     mode: passthrough
     to: backend:8883
+  # Comodín: cubre cualquier subdominio bajo dev.<dominio> sin enumerarlos.
+  - host: "*.dev"
+    mode: passthrough
+    to: backend:8883

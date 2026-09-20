@@ -209,7 +209,9 @@ ClientHello y copia bytes en ambos sentidos.
 ### 5.2 Despacho en el agente
 
 El agente acepta solo conexiones cuyo origen es un gateway de nodo conocido,
-lee el header PROXY, lee el SNI y busca el hostname en `wgrelay.yml`:
+lee el header PROXY, lee el SNI y busca el hostname en `wgrelay.yml` con el
+mismo criterio que el nodo (exacto primero, después comodines). Por eso una
+sola ruta `*` cubre todos los subdominios del cliente sin enumerarlos:
 
 | Modo | Qué hace el agente | Estado |
 |---|---|---|
@@ -416,6 +418,9 @@ routes:
   - host: mqtt              # relativo → mqtt.<dominio asignado>; "@" = el dominio
     mode: passthrough
     to: emqx:8883           # admite ${VARIABLES} de entorno
+  - host: "*"               # comodín: el resto de los subdominios
+    mode: passthrough
+    to: caddy:443
   - host: web
     mode: passthrough
     to: nginx:443

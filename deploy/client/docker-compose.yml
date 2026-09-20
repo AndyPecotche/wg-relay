@@ -2,7 +2,10 @@
 # Copiá este archivo, wgrelay.yml y .env.example a tu proyecto.
 services:
   wgrelay:
-    image: ghcr.io/andypecotche/wg-relay-agent:latest
+    # Para probar sin publicar la imagen:
+    #   docker build --target agent -t wgrelay-agent:dev /ruta/al/repo/wg-relay
+    #   y poné WGRELAY_VERSION=dev con image: wgrelay-agent:${WGRELAY_VERSION}
+    image: ghcr.io/andypecotche/wg-relay-agent:${WGRELAY_VERSION:-latest}
     restart: unless-stopped
     environment:
       WGRELAY_TOKEN: ${WGRELAY_TOKEN:?definí WGRELAY_TOKEN en .env}
