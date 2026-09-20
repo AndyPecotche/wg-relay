@@ -1,36 +1,4 @@
-# Entornos y Secretos
 .env
-certbot/cloudflare.ini
-
-# Certificados y logs generados por Certbot
-certbot/conf/
-certbot/logs/
-
-# Configuraciones generadas y llaves privadas de WireGuard
-wireguard/config/
-
-# Peers activos de WireGuard (ignorar configuraciones reales, mantener .gitkeep)
-wireguard/peers.d/*.conf
-wireguard/peers.d/*.conf.disabled
-!wireguard/peers.d/.gitkeep
-
-# Virtualhosts y reglas SNI activas de Nginx (ignorar configuraciones reales, mantener .gitkeep y 00-base.map)
-nginx/conf.d/*.conf
-nginx/conf.d/*.conf.disabled
-!nginx/conf.d/.gitkeep
-nginx/stream.d/*.conf
-nginx/stream.d/*.conf.disabled
-nginx/stream.d/*.map
-nginx/stream.d/*.map.disabled
-!nginx/stream.d/.gitkeep
-!nginx/stream.d/00-base.map
-
-# Archivos de sistema y editores
-.DS_Store
-Thumbs.db
-*.swp
-*.bak
-*~
-.idea/
-.vscode/
-
+/bin/
+/test/e2e/minica.pem
+/test/e2e/pebble-root.pem

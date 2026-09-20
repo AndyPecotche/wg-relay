@@ -1,0 +1,17 @@
+# Nodo adicional (node2, node3, ...) en otra VM. Solo necesita llegar a la API.
+# Instrucciones en docs/DEPLOY.md.
+name: wgrelay-node
+services:
+  node:
+    image: ghcr.io/andypecotche/wg-relay-node:${WGRELAY_VERSION:-latest}
+    build: {context: ../.., target: node}
+    restart: unless-stopped
+    environment:
+      WGRELAY_API_URL: https://${WGRELAY_API_DOMAIN:?}
+      WGRELAY_NODE_TOKEN: ${WGRELAY_NODE_TOKEN:?}
+      WGRELAY_HTTPS_LISTEN: ":8443"
+      WGRELAY_HTTP_LISTEN: ":8080"
+    ports:
+      - "443:8443/tcp"
+      - "80:8080/tcp"
+      - "51820:51820/udp"

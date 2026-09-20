@@ -1,0 +1,14 @@
+# Todo el tráfico va a Caddy, que hace el resto. No hace falta declarar acá
+# cada subdominio: el comodín los cubre a todos.
+relay: https://api.wg-relay.andy.net.ar
+
+routes:
+  - host: "*"                 # cualquier subdominio → Caddy
+    mode: passthrough
+    to: caddy:443
+    proxy_protocol: true
+
+  - host: "@"                 # el dominio raíz también
+    mode: passthrough
+    to: caddy:443
+    proxy_protocol: true

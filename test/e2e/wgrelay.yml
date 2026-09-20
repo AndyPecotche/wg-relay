@@ -1,0 +1,35 @@
+relay: http://api:8080
+
+# CA de prueba (Pebble) en vez de Let's Encrypt.
+acme:
+  email: e2e@test
+  ca: https://pebble:14000/dir
+  trusted_roots: /pebble/minica.pem
+  # DNS-01 (comodines) valida contra mockcf, no contra el DNS público:
+  # nuestro dominio de prueba clients.e2e.test no existe ahí.
+  dns_resolvers: ["mockcf:8053"]
+
+routes:
+  - host: mqtt
+    mode: passthrough
+    to: backend:8883
+  # Comodín: cubre cualquier subdominio bajo dev.<dominio> sin enumerarlos.
+  - host: "*.dev"
+    mode: passthrough
+    to: backend:8883
+  # terminate http (default): el agente saca el certificado y proxea HTTP.
+  - host: web
+    to: http://webbackend:80
+  # terminate tcp://: el agente termina TLS y entrega bytes crudos al
+  # backend, que habla MQTT plano y no sabe que existe TLS.
+  - host: mqttterm
+    to: tcp://mosquitto:1883
+  # Comodín en terminate: certificado wildcard vía DNS-01 delegado (F1b).
+  - host: "*.wild"
+    to: http://webbackend:80
+  # passthrough con export_cert: DNS-01 es el único desafío posible acá (el
+  # TLS-ALPN-01 no llegaría al agente, la conexión va derecho al backend).
+  - host: exported
+    mode: passthrough
+    to: backend:8883
+    export_cert: /certs/exported

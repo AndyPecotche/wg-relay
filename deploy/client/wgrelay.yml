@@ -1,0 +1,41 @@
+# Configuración del agente de wg-relay. Se puede versionar con el proyecto:
+# no contiene secretos. El token va en la variable WGRELAY_TOKEN.
+relay: https://api.wg-relay.andy.net.ar
+
+# Contacto para Let's Encrypt (solo hace falta con rutas en modo terminate).
+acme:
+  email: vos@ejemplo.com
+  # Para probar sin gastar cuota de Let's Encrypt:
+  # ca: https://acme-staging-v02.api.letsencrypt.org/directory
+
+routes:
+  # terminate (modo por defecto): el agente saca el certificado solo y le
+  # pasa HTTP plano al servicio. El servicio no necesita certificados.
+  # host relativo → influx.<tu-dominio-asignado>
+  - host: influx
+    to: http://influxdb:8086
+
+  # passthrough: el TLS llega intacto al servicio, que lo termina él mismo.
+  - host: mqtt
+    mode: passthrough
+    to: emqx:8883
+
+  # proxy_protocol: true antepone un header PROXY v2 con la IP real del
+  # visitante. Activarlo solo si el servicio lo soporta (nginx, Caddy,
+  # HAProxy, Traefik, EMQX...); si no, la conexión falla.
+  - host: web
+    mode: passthrough
+    to: nginx:443
+    proxy_protocol: true
+
+  # Comodines: "*" cubre todos los subdominios sin enumerarlos, y "@" es el
+  # dominio raíz. El match exacto gana sobre el comodín, así que se puede
+  # mandar todo a un proxy y desviar una excepción a otro puerto:
+  #   - host: "*"
+  #     mode: passthrough
+  #     to: caddy:443
+  # Ver examples/caddy/ para un stack completo con certificados automáticos.
+
+  # Un comodín en modo terminate necesitaría un certificado wildcard, que
+  # todavía no está implementado: para eso, declarar los subdominios uno por
+  # uno, o usar passthrough hacia un proxy propio.
