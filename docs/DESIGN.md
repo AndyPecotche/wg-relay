@@ -202,6 +202,14 @@ SNI **sin descifrar nada** y resuelve:
 3. Sin match → **se cierra el TCP sin responder**. Un escáner por IP no obtiene
    ni una alerta TLS.
 
+> **El cliente TIENE que enviar SNI.** Es la única información que usa el nodo
+> para decidir a qué túnel va la conexión; sin ella no hay a dónde rutear y se
+> corta. Un cliente que no manda SNI (o que se conecta por IP en vez de por
+> nombre) ve un cierre de conexión durante el handshake TLS, que cada
+> librería reporta distinto: `UNEXPECTED_EOF_WHILE_READING` en OpenSSL,
+> "socket disconnected before secure TLS connection was established" en
+> Node.js. Es una restricción inherente a multiplexar por SNI, no un error.
+
 Al encontrar el tunnel, abre una conexión al agente (`<ip-vpn>:443` dentro del
 túnel), escribe un header **PROXY v2** con la IP real del visitante, reenvía el
 ClientHello y copia bytes en ambos sentidos.

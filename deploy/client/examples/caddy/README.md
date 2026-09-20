@@ -66,6 +66,24 @@ Probá `https://app.<tu-dominio>` en el navegador, y el broker con:
 mosquitto_sub -h mqtt.<tu-dominio> -p 443 --capath /etc/ssl/certs -t '#' -v
 ```
 
+### Dos cosas que confunden al probar
+
+**El cliente tiene que mandar SNI.** El nodo rutea solo por ese campo. Un
+cliente que no lo envía ve la conexión cerrada en pleno handshake, con
+mensajes que no mencionan SNI por ningún lado ("socket disconnected before
+secure TLS connection was established" en Node.js, `UNEXPECTED_EOF_WHILE_READING`
+en OpenSSL). El cliente MQTT de Postman, por ejemplo, no lo manda.
+
+**Con la CA de staging, `--insecure` no alcanza.** En mosquitto solo desactiva
+la verificación del hostname, no la de la cadena, así que el certificado de
+staging igual se rechaza con `certificate verify failed`. Para probar contra
+staging hay que pasarle la raíz explícitamente:
+
+```sh
+curl -sO https://letsencrypt.org/certs/staging/letsencrypt-stg-root-x1.pem
+mosquitto_sub -h mqtt.<dominio> -p 443 --cafile letsencrypt-stg-root-x1.pem -t '#' -v
+```
+
 > Mientras probás, descomentá `ACME_CA` en `.env` para usar la CA de staging
 > de Let's Encrypt y no gastar cuota. Los certificados no serán confiables
 > (el navegador advierte; `mosquitto_sub` necesita `--insecure`). Al pasar a
