@@ -29,6 +29,7 @@ func main() {
 		WGPort:      port,
 		HTTPSListen: env("WGRELAY_HTTPS_LISTEN", ":443"),
 		HTTPListen:  env("WGRELAY_HTTP_LISTEN", ":80"),
+		DNSListen:   env("WGRELAY_DNS_LISTEN", ""),
 		LocalRoutes: local,
 		Log:         log,
 	}

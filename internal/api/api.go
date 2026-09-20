@@ -34,11 +34,16 @@ type Server struct {
 	Store      *store.Store
 	BaseDomain string
 	Log        *slog.Logger
-	// DNSProvider habilita el endpoint de DNS-01 delegado (F1b). Si es nil,
-	// ese endpoint responde 501: el resto del servicio funciona igual.
-	// Cloudflare (internal/cloudflare) es la implementación por defecto;
-	// dnsprovider.Webhook cubre cualquier otro proveedor (DESIGN.md §4.3).
+	// DNSProvider es opcional: si está configurado, el DNS-01 delegado
+	// TAMBIÉN escribe el TXT en un proveedor externo (Cloudflare vía
+	// internal/cloudflare, o cualquier otro vía dnsprovider.Webhook), además
+	// de guardarlo siempre en la base para servirlo desde el DNS propio de
+	// los nodos (DNSZone/internal/dnsserver). Ninguno de los dos es
+	// obligatorio; ver DESIGN.md §4.3.
 	DNSProvider dnsprovider.Provider
+	// DNSZone habilita que Store.NodeConfig incluya la zona DNS propia en lo
+	// que se empuja a los nodos (NSNames vacío == deshabilitado).
+	DNSZone store.DNSZoneConfig
 
 	dnsLimitersMu sync.Mutex
 	dnsLimiters   map[int64]*rate.Limiter // por tunnel_id
@@ -232,14 +237,20 @@ func (s *Server) storageList(w http.ResponseWriter, r *http.Request, t store.Tun
 // ------------------------------------------------- ACME DNS-01 delegado (F1b)
 //
 // Habilita certificados wildcard sobre el dominio asignado: el agente pide
-// que se escriba el TXT del desafío, nosotros lo hacemos en el proveedor DNS
-// configurado (nunca el agente, que no tiene ni debe tener esa credencial) y
-// solo dentro de la zona del tunnel autenticado. Ver DESIGN.md §6.2.1 y §4.3.
+// que se escriba el TXT del desafío. El valor siempre se guarda en la base
+// (dns_challenge), que es lo que el DNS propio de los nodos sirve
+// (DNSZone/internal/dnsserver, DESIGN.md); si además hay un
+// dnsprovider.Provider configurado, TAMBIÉN se escribe ahí (uso híbrido,
+// ortogonal). Solo dentro de la zona del tunnel autenticado. Ver DESIGN.md
+// §6.2.1 y §4.3.
 
 func (s *Server) acmeDNSCreate(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
 	if s.DNSProvider == nil {
-		writeErr(w, http.StatusNotImplemented, proto.ErrInternal, "el servidor no tiene un proveedor DNS configurado")
-		return
+		if ok, err := s.Store.HasPublicNode(r.Context()); err == nil && !ok {
+			writeErr(w, http.StatusNotImplemented, proto.ErrInternal,
+				"no hay proveedor DNS externo ni ningún nodo con IP pública: DNS-01 delegado no puede funcionar")
+			return
+		}
 	}
 	if !s.dnsLimiter(t.ID).Allow() {
 		writeErr(w, http.StatusTooManyRequests, proto.ErrRateLimited, "demasiadas solicitudes de DNS-01; esperá unos segundos")
@@ -258,28 +269,28 @@ func (s *Server) acmeDNSCreate(w http.ResponseWriter, r *http.Request, t store.T
 		writeErr(w, http.StatusBadRequest, proto.ErrBadRequest, "value inválido")
 		return
 	}
-	recordID, err := s.DNSProvider.CreateTXT(r.Context(), fqdn, req.Value)
-	if err != nil {
-		s.Log.Error("dns provider: creando TXT", "fqdn", fqdn, "err", err)
-		writeErr(w, http.StatusBadGateway, proto.ErrInternal, "no se pudo crear el registro DNS")
-		return
+	var recordID string
+	if s.DNSProvider != nil {
+		id, err := s.DNSProvider.CreateTXT(r.Context(), fqdn, req.Value)
+		if err != nil {
+			s.Log.Error("dns provider: creando TXT", "fqdn", fqdn, "err", err)
+			writeErr(w, http.StatusBadGateway, proto.ErrInternal, "no se pudo crear el registro DNS externo")
+			return
+		}
+		recordID = id
 	}
-	id, err := s.Store.CreateDNSChallenge(r.Context(), t.ID, fqdn, recordID)
+	id, err := s.Store.CreateDNSChallenge(r.Context(), t.ID, fqdn, req.Value, recordID)
 	if err != nil {
 		s.fail(w, err)
 		return
 	}
-	s.Log.Info("DNS-01: TXT creado", "tunnel", t.ID, "fqdn", fqdn)
+	s.Log.Info("DNS-01: TXT creado", "tunnel", t.ID, "fqdn", fqdn, "external_provider", s.DNSProvider != nil)
 	writeJSON(w, proto.ACMEDNSCreateResponse{ID: id})
 }
 
 func (s *Server) acmeDNSDelete(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
-	if s.DNSProvider == nil {
-		writeErr(w, http.StatusNotImplemented, proto.ErrInternal, "el servidor no tiene un proveedor DNS configurado")
-		return
-	}
 	id := r.PathValue("id")
-	recordID, err := s.Store.DNSChallengeRecordID(r.Context(), t.ID, id)
+	_, recordID, err := s.Store.DNSChallenge(r.Context(), t.ID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		w.WriteHeader(http.StatusNoContent) // ya no existe: el estado deseado ya está logrado
 		return
@@ -288,10 +299,12 @@ func (s *Server) acmeDNSDelete(w http.ResponseWriter, r *http.Request, t store.T
 		s.fail(w, err)
 		return
 	}
-	if err := s.DNSProvider.DeleteRecord(r.Context(), recordID); err != nil {
-		// No abortamos: preferible un TXT huérfano (TTL 60s) a dejar al
-		// agente sin poder terminar de limpiar su propio estado.
-		s.Log.Warn("dns provider: borrando TXT", "id", id, "err", err)
+	if recordID != "" && s.DNSProvider != nil {
+		if err := s.DNSProvider.DeleteRecord(r.Context(), recordID); err != nil {
+			// No abortamos: preferible un TXT huérfano (TTL 60s) a dejar al
+			// agente sin poder terminar de limpiar su propio estado.
+			s.Log.Warn("dns provider: borrando TXT", "id", id, "err", err)
+		}
 	}
 	if err := s.Store.DeleteDNSChallenge(r.Context(), t.ID, id); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, err)
@@ -383,7 +396,7 @@ func (s *Server) nodeConfig(w http.ResponseWriter, r *http.Request, n store.Node
 			s.fail(w, err)
 			return
 		}
-		cfg, err := s.Store.NodeConfig(ctx, s.BaseDomain)
+		cfg, err := s.Store.NodeConfig(ctx, s.BaseDomain, nodeFreshness, s.DNSZone)
 		if err != nil && ctx.Err() == nil {
 			s.fail(w, err)
 			return

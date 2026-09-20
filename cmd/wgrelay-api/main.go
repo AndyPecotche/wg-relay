@@ -6,6 +6,7 @@
 //	wgrelay-api tunnel rotate-token --id 3
 //	wgrelay-api node create --name node1 --endpoint node1.wg-relay.andy.net.ar:51820
 //	wgrelay-api node list
+//	wgrelay-api node set-public-ip --id 1 --public-ip 203.0.113.10
 //	wgrelay-api dns sync
 package main
 
@@ -17,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -55,6 +57,12 @@ type config struct {
 	CFBaseURL       string // solo para tests: apunta a un servidor que imite la API de Cloudflare
 	DNSWebhookURL   string
 	DNSWebhookToken string
+
+	// DNS autoritativo propio en los nodos (internal/dnsserver), alternativa
+	// a lo de arriba: sin proveedor externo, sin token. DNSNSNames vacío ==
+	// deshabilitado. Ver DESIGN.md.
+	DNSNSNames  string // CSV de FQDNs de nameserver declarados en el registrador
+	DNSSOAEmail string
 }
 
 func loadConfig() config {
@@ -75,6 +83,9 @@ func loadConfig() config {
 		CFBaseURL:       env("CLOUDFLARE_API_BASE_URL", ""),
 		DNSWebhookURL:   env("WGRELAY_DNS_WEBHOOK_URL", ""),
 		DNSWebhookToken: env("WGRELAY_DNS_WEBHOOK_TOKEN", ""),
+
+		DNSNSNames:  env("WGRELAY_DNS_NS_NAMES", ""),
+		DNSSOAEmail: env("WGRELAY_DNS_SOA_EMAIL", ""),
 	}
 }
 
@@ -140,6 +151,8 @@ func main() {
 		err = nodeCreate(ctx, st, args[2:])
 	case "node list":
 		err = nodeList(ctx, st)
+	case "node set-public-ip":
+		err = nodeSetPublicIP(ctx, st, args[2:])
 	case "dns sync":
 		err = dnsSync(ctx, cfg, st)
 	default:
@@ -155,16 +168,21 @@ const usage = `uso:
   wgrelay-api tunnel create --email EMAIL [--plan free|persistent]
   wgrelay-api tunnel list
   wgrelay-api tunnel rotate-token --id ID
-  wgrelay-api node create --name NOMBRE --endpoint HOST:51820
+  wgrelay-api node create --name NOMBRE --endpoint HOST:51820 [--public-ip IP]
   wgrelay-api node list
+  wgrelay-api node set-public-ip --id ID --public-ip IP
   wgrelay-api dns sync`
 
 func serve(ctx context.Context, cfg config, st *store.Store, log *slog.Logger) error {
 	dp := newDNSProvider(cfg)
-	if dp == nil {
-		log.Warn("ningún proveedor de DNS configurado (WGRELAY_DNS_PROVIDER, o CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID): el endpoint de DNS-01 delegado (certificados wildcard) queda deshabilitado")
+	dz := store.DNSZoneConfig{NSNames: splitCSV(cfg.DNSNSNames), SOAEmail: cfg.DNSSOAEmail}
+	if dz.SOAEmail == "" {
+		dz.SOAEmail = "hostmaster." + cfg.BaseDomain
 	}
-	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log, DNSProvider: dp}).Handler()
+	if dp == nil && len(dz.NSNames) == 0 {
+		log.Warn("ningún proveedor de DNS configurado (WGRELAY_DNS_PROVIDER/CLOUDFLARE_API_TOKEN, o WGRELAY_DNS_NS_NAMES para DNS propio): el endpoint de DNS-01 delegado (certificados wildcard) queda deshabilitado")
+	}
+	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log, DNSProvider: dp, DNSZone: dz}).Handler()
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}}
 
 	if cfg.APIDomain != "" {
@@ -260,16 +278,49 @@ func nodeCreate(ctx context.Context, st *store.Store, args []string) error {
 	fs := flag.NewFlagSet("node create", flag.ExitOnError)
 	name := fs.String("name", "", "nombre del nodo, ej. node1")
 	endpoint := fs.String("endpoint", "", "host:puerto UDP público de WireGuard, ej. node1.wg-relay.andy.net.ar:51820")
+	publicIP := fs.String("public-ip", "", "IP pública IPv4 del nodo (para el DNS propio en clients.*, opcional)")
 	fs.Parse(args)
 	if *name == "" || *endpoint == "" {
 		return errors.New("--name y --endpoint son obligatorios")
 	}
-	n, tok, err := st.CreateNode(ctx, *name, *endpoint)
+	if err := validPublicIP(*publicIP); err != nil {
+		return err
+	}
+	n, tok, err := st.CreateNode(ctx, *name, *endpoint, *publicIP)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Nodo creado\n  nombre:    %s\n  endpoint:  %s\n  gateway:   %s\n\n", n.Name, n.Endpoint, n.GatewayIP)
 	fmt.Printf("Token del nodo (se muestra UNA sola vez) → WGRELAY_NODE_TOKEN:\n\n  %s\n\n", tok)
+	return nil
+}
+
+func nodeSetPublicIP(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("node set-public-ip", flag.ExitOnError)
+	id := fs.Int64("id", 0, "id del nodo")
+	publicIP := fs.String("public-ip", "", "IP pública IPv4 del nodo")
+	fs.Parse(args)
+	if *id == 0 || *publicIP == "" {
+		return errors.New("--id y --public-ip son obligatorios")
+	}
+	if err := validPublicIP(*publicIP); err != nil {
+		return err
+	}
+	if err := st.SetNodePublicIP(ctx, *id, *publicIP); err != nil {
+		return err
+	}
+	fmt.Printf("Nodo %d actualizado: public_ip = %s\n", *id, *publicIP)
+	return nil
+}
+
+func validPublicIP(s string) error {
+	if s == "" {
+		return nil
+	}
+	addr, err := netip.ParseAddr(s)
+	if err != nil || !addr.Is4() {
+		return fmt.Errorf("--public-ip %q no es una IPv4 válida", s)
+	}
 	return nil
 }
 
@@ -279,13 +330,17 @@ func nodeList(ctx context.Context, st *store.Store) error {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNOMBRE\tENDPOINT\tGATEWAY\tÚLTIMO CONTACTO")
+	fmt.Fprintln(w, "ID\tNOMBRE\tENDPOINT\tGATEWAY\tIP PÚBLICA\tÚLTIMO CONTACTO")
 	for _, n := range ns {
 		seen := "nunca"
 		if n.LastSeen != nil {
 			seen = time.Since(*n.LastSeen).Round(time.Second).String() + " atrás"
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\n", n.ID, n.Name, n.Endpoint, n.GatewayIP, seen)
+		pub := n.PublicIP
+		if pub == "" {
+			pub = "-"
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Name, n.Endpoint, n.GatewayIP, pub, seen)
 	}
 	return w.Flush()
 }
@@ -302,27 +357,43 @@ func dnsSync(ctx context.Context, cfg config, st *store.Store) error {
 	return ensureDNS(ctx, cfg, domains)
 }
 
-// ensureDNS crea "<dominio>" y "*.<dominio>" como CNAME al edge. Los registros
-// son explícitos por tunnel (no un comodín global) por RFC 4592: el TXT de
-// ACME bajo el dominio del cliente anularía un comodín superior.
+// ensureDNS crea "<dominio>" y "*.<dominio>" como CNAME al edge, si hay un
+// proveedor DNS externo configurado. Con DNS propio (WGRELAY_DNS_NS_NAMES)
+// no hace falta nada: el catch-all de internal/dnsserver ya resuelve
+// cualquier subdominio de cliente sin un registro por tunnel. Sin ninguno de
+// los dos, imprime los registros para cargarlos a mano.
 func ensureDNS(ctx context.Context, cfg config, domains []string) error {
 	dp := newDNSProvider(cfg)
-	if dp == nil || cfg.EdgeHost == "" {
+	switch {
+	case dp != nil:
+		for _, d := range domains {
+			for _, name := range []string{d, "*." + d} {
+				if err := dp.EnsureCNAME(ctx, name, cfg.EdgeHost); err != nil {
+					return fmt.Errorf("DNS %s: %w", name, err)
+				}
+				fmt.Printf("DNS ok: %s → %s\n", name, cfg.EdgeHost)
+			}
+		}
+	case cfg.DNSNSNames != "":
+		fmt.Println("DNS propio activo: nada que crear, ya es resoluble.")
+	default:
 		fmt.Println("Proveedor de DNS no configurado: creá estos registros a mano (sin proxy, nube gris):")
 		for _, d := range domains {
 			fmt.Printf("  %-50s CNAME  %s\n  %-50s CNAME  %s\n", d, cfg.EdgeHost, "*."+d, cfg.EdgeHost)
 		}
-		return nil
-	}
-	for _, d := range domains {
-		for _, name := range []string{d, "*." + d} {
-			if err := dp.EnsureCNAME(ctx, name, cfg.EdgeHost); err != nil {
-				return fmt.Errorf("DNS %s: %w", name, err)
-			}
-			fmt.Printf("DNS ok: %s → %s\n", name, cfg.EdgeHost)
-		}
 	}
 	return nil
+}
+
+// splitCSV separa por comas, recorta espacios y descarta vacíos.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func env(k, def string) string {

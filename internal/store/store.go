@@ -258,29 +258,43 @@ type Node struct {
 	Endpoint  string
 	GatewayIP string
 	PublicKey string
+	PublicIP  string
 	LastSeen  *time.Time
 }
 
-func (s *Store) CreateNode(ctx context.Context, name, endpoint string) (Node, auth.Token, error) {
+func (s *Store) CreateNode(ctx context.Context, name, endpoint, publicIP string) (Node, auth.Token, error) {
 	tok := auth.New(auth.PrefixNode)
-	n := Node{Name: name, Endpoint: endpoint}
+	n := Node{Name: name, Endpoint: endpoint, PublicIP: publicIP}
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO node(name, endpoint, gateway_ip, token_id, token_hash)
-		VALUES ($1, $2, ('10.10.' || nextval('node_gw_seq') || '.1')::inet, $3, $4)
-		RETURNING id, host(gateway_ip)`, name, endpoint, tok.ID, auth.Hash(tok)).Scan(&n.ID, &n.GatewayIP)
+		INSERT INTO node(name, endpoint, gateway_ip, token_id, token_hash, public_ip)
+		VALUES ($1, $2, ('10.10.' || nextval('node_gw_seq') || '.1')::inet, $3, $4, NULLIF($5, '')::inet)
+		RETURNING id, host(gateway_ip)`, name, endpoint, tok.ID, auth.Hash(tok), publicIP).Scan(&n.ID, &n.GatewayIP)
 	return n, tok, err
+}
+
+// SetNodePublicIP carga o corrige la IP pública de un nodo ya existente (la
+// migración que agregó la columna no hace backfill).
+func (s *Store) SetNodePublicIP(ctx context.Context, nodeID int64, publicIP string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE node SET public_ip = NULLIF($2, '')::inet WHERE id = $1`, nodeID, publicIP)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, endpoint, host(gateway_ip), COALESCE(wg_pubkey, ''), last_seen_at
+		SELECT id, name, endpoint, host(gateway_ip), COALESCE(wg_pubkey, ''), COALESCE(host(public_ip), ''), last_seen_at
 		FROM node ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (Node, error) {
 		var n Node
-		return n, r.Scan(&n.ID, &n.Name, &n.Endpoint, &n.GatewayIP, &n.PublicKey, &n.LastSeen)
+		return n, r.Scan(&n.ID, &n.Name, &n.Endpoint, &n.GatewayIP, &n.PublicKey, &n.PublicIP, &n.LastSeen)
 	})
 }
 
@@ -294,6 +308,16 @@ func (s *Store) AuthNode(ctx context.Context, tok auth.Token) (Node, error) {
 		return Node{}, ErrUnauthorized
 	}
 	return n, err
+}
+
+// HasPublicNode indica si al menos un nodo tiene IP pública cargada: sin
+// esto, el DNS-01 delegado no puede funcionar sin un dnsprovider.Provider
+// externo (internal/api usa esto para fallar rápido en vez de dejar que el
+// agente vea un timeout opaco de Let's Encrypt).
+func (s *Store) HasPublicNode(ctx context.Context) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM node WHERE public_ip IS NOT NULL)`).Scan(&ok)
+	return ok, err
 }
 
 func (s *Store) NodeHello(ctx context.Context, nodeID int64, pubkey, version string) error {
@@ -322,8 +346,21 @@ func (s *Store) ActiveNodes(ctx context.Context, window time.Duration) ([]proto.
 	})
 }
 
-// NodeConfig arma la foto de peers y rutas de los agentes con lease vigente.
-func (s *Store) NodeConfig(ctx context.Context, baseDomain string) (proto.NodeConfig, error) {
+// DNSZoneConfig es la parte de la zona DNS propia que decide el operador por
+// config, no el estado de la base: qué nameservers declaró en el
+// registrador y el email de contacto de la SOA. NSNames vacío == DNS propio
+// deshabilitado. Deliberadamente no deriva de la tabla node: el NS que
+// contestamos tiene que ser la misma foto fija que el registrador conoce, no
+// algo que cambie solo con el estado de los nodos (DESIGN.md).
+type DNSZoneConfig struct {
+	NSNames  []string
+	SOAEmail string
+}
+
+// NodeConfig arma la foto de peers y rutas de los agentes con lease vigente,
+// más (si dz.NSNames no está vacío) la zona DNS propia que el nodo puede
+// servir.
+func (s *Store) NodeConfig(ctx context.Context, baseDomain string, nodeFreshWindow time.Duration, dz DNSZoneConfig) (proto.NodeConfig, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT t.subdomain, host(t.vpn_ip), l.wg_pubkey
 		FROM agent_lease l JOIN tunnel t ON t.id = l.tunnel_id
@@ -344,10 +381,48 @@ func (s *Store) NodeConfig(ctx context.Context, baseDomain string) (proto.NodeCo
 	if err != nil {
 		return proto.NodeConfig{}, err
 	}
+	if len(dz.NSNames) > 0 {
+		edge, err := s.dnsActiveNodeIPs(ctx, nodeFreshWindow)
+		if err != nil {
+			return proto.NodeConfig{}, err
+		}
+		challenges, err := s.dnsChallenges(ctx)
+		if err != nil {
+			return proto.NodeConfig{}, err
+		}
+		cfg.DNS = &proto.DNSZone{
+			Zone: baseDomain, NSNames: dz.NSNames, SOAEmail: dz.SOAEmail,
+			Edge: edge, Challenges: challenges,
+		}
+	}
 	b, _ := json.Marshal(cfg)
 	sum := sha256.Sum256(b)
 	cfg.Version = hex.EncodeToString(sum[:8])
 	return cfg, nil
+}
+
+func (s *Store) dnsActiveNodeIPs(ctx context.Context, window time.Duration) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT host(public_ip) FROM node
+		WHERE public_ip IS NOT NULL AND last_seen_at > now() - $1::interval ORDER BY public_ip`, window.String())
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (string, error) {
+		var ip string
+		return ip, r.Scan(&ip)
+	})
+}
+
+func (s *Store) dnsChallenges(ctx context.Context) ([]proto.DNSTXT, error) {
+	rows, err := s.db.Query(ctx, `SELECT fqdn, value FROM dns_challenge ORDER BY fqdn`)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(r pgx.CollectableRow) (proto.DNSTXT, error) {
+		var c proto.DNSTXT
+		return c, r.Scan(&c.FQDN, &c.Value)
+	})
 }
 
 // ------------------------------------------------- almacén del agente
@@ -406,26 +481,27 @@ func (s *Store) StorageList(ctx context.Context, tunnelID int64, prefix string) 
 
 // ------------------------------------------------- DNS-01 delegado (F1b)
 
-// CreateDNSChallenge registra qué tunnel es dueño de un registro TXT del
-// proveedor DNS configurado, para poder autorizar su borrado después sin
-// exponerle al agente el ID real de ese proveedor.
-func (s *Store) CreateDNSChallenge(ctx context.Context, tunnelID int64, fqdn, providerRecordID string) (string, error) {
+// CreateDNSChallenge registra el TXT de un desafío ACME DNS-01: el valor
+// siempre se guarda (es lo que permite servirlo desde el DNS propio de los
+// nodos, internal/dnsserver, sin depender de ningún proveedor externo).
+// providerRecordID queda vacío salvo que además haya un dnsprovider.Provider
+// configurado (uso híbrido, ortogonal).
+func (s *Store) CreateDNSChallenge(ctx context.Context, tunnelID int64, fqdn, value, providerRecordID string) (string, error) {
 	id := auth.Random(10)
-	_, err := s.db.Exec(ctx, `INSERT INTO dns_challenge(id, tunnel_id, fqdn, provider_record_id) VALUES ($1, $2, $3, $4)`,
-		id, tunnelID, fqdn, providerRecordID)
+	_, err := s.db.Exec(ctx, `INSERT INTO dns_challenge(id, tunnel_id, fqdn, value, provider_record_id)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''))`, id, tunnelID, fqdn, value, providerRecordID)
 	return id, err
 }
 
-// DNSChallengeRecordID devuelve el ID del proveedor DNS de un desafío, solo
-// si pertenece al tunnel dado.
-func (s *Store) DNSChallengeRecordID(ctx context.Context, tunnelID int64, id string) (string, error) {
-	var providerRecordID string
-	err := s.db.QueryRow(ctx, `SELECT provider_record_id FROM dns_challenge WHERE id = $1 AND tunnel_id = $2`,
-		id, tunnelID).Scan(&providerRecordID)
+// DNSChallenge devuelve el valor y (si lo hay) el ID del proveedor externo de
+// un desafío, solo si pertenece al tunnel dado.
+func (s *Store) DNSChallenge(ctx context.Context, tunnelID int64, id string) (value, providerRecordID string, err error) {
+	err = s.db.QueryRow(ctx, `SELECT value, COALESCE(provider_record_id, '') FROM dns_challenge WHERE id = $1 AND tunnel_id = $2`,
+		id, tunnelID).Scan(&value, &providerRecordID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrNotFound
+		return "", "", ErrNotFound
 	}
-	return providerRecordID, err
+	return value, providerRecordID, err
 }
 
 func (s *Store) DeleteDNSChallenge(ctx context.Context, tunnelID int64, id string) error {

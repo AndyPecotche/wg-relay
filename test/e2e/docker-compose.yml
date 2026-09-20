@@ -17,6 +17,11 @@ services:
       CLOUDFLARE_API_TOKEN: dummy
       CLOUDFLARE_ZONE_ID: e2e
       CLOUDFLARE_API_BASE_URL: http://mockcf:8080/client/v4
+      # DNS propio en los nodos (internal/dnsserver): independiente de lo de
+      # arriba, se prueba consultando el :5300 del nodo directamente
+      # (test/e2e/dnsquery), no a través de Pebble.
+      WGRELAY_DNS_NS_NAMES: ns1.e2e.test,ns2.e2e.test
+      WGRELAY_DNS_SOA_EMAIL: hostmaster@e2e.test
     depends_on: {postgres: {condition: service_healthy}}
 
   # Imita la API de Cloudflare (escribe TXT) y sirve un DNS de juguete que
@@ -41,6 +46,7 @@ services:
       WGRELAY_NODE_TOKEN: ${NODE_TOKEN:-}
       WGRELAY_HTTPS_LISTEN: ":8443"
       WGRELAY_HTTP_LISTEN: ":8080"
+      WGRELAY_DNS_LISTEN: ":5300"
       WGRELAY_DEBUG: "1"
     ports: ["127.0.0.1:18443:8443", "127.0.0.1:18080:8080"]
     networks:

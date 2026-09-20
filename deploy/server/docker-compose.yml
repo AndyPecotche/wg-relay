@@ -25,6 +25,11 @@ services:
       WGRELAY_ACME_CA: ${WGRELAY_ACME_CA:-}
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       CLOUDFLARE_ZONE_ID: ${CLOUDFLARE_ZONE_ID:-}
+      # DNS propio en los nodos (alternativa a lo de arriba, sin token ni
+      # cuota): dejar vacío si no vas a autohospedar el DNS de clients.*.
+      # Instrucciones de delegación en docs/DEPLOY.md.
+      WGRELAY_DNS_NS_NAMES: ${WGRELAY_DNS_NS_NAMES:-}
+      WGRELAY_DNS_SOA_EMAIL: ${WGRELAY_DNS_SOA_EMAIL:-}
     volumes: [apidata:/data]
     depends_on: {postgres: {condition: service_healthy}}
     # Sin puertos publicados: el tráfico HTTPS de la API entra por el nodo.
@@ -39,10 +44,15 @@ services:
       WGRELAY_LOCAL_ROUTES: ${WGRELAY_API_DOMAIN}=api:8443
       WGRELAY_HTTPS_LISTEN: ":8443"
       WGRELAY_HTTP_LISTEN: ":8080"
+      # Descomentar solo si este nodo va a ser uno de los nameservers
+      # declarados en WGRELAY_DNS_NS_NAMES (ver docs/DEPLOY.md):
+      # WGRELAY_DNS_LISTEN: ":5300"
     ports:
       - "443:8443/tcp"
       - "80:8080/tcp"
       - "51820:51820/udp"
+      # - "53:5300/udp"
+      # - "53:5300/tcp"
     depends_on: [api]
 
 volumes:

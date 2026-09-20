@@ -19,6 +19,7 @@ import (
 	"github.com/AndyPecotche/wg-relay/internal/apiclient"
 	"github.com/AndyPecotche/wg-relay/internal/auth"
 	"github.com/AndyPecotche/wg-relay/internal/buildinfo"
+	"github.com/AndyPecotche/wg-relay/internal/dnsserver"
 	"github.com/AndyPecotche/wg-relay/internal/pipe"
 	"github.com/AndyPecotche/wg-relay/internal/proto"
 	"github.com/AndyPecotche/wg-relay/internal/proxyproto"
@@ -35,6 +36,10 @@ type Config struct {
 	WGPort      int
 	HTTPSListen string
 	HTTPListen  string
+	// DNSListen habilita el DNS autoritativo propio para clients.* (vacío =
+	// deshabilitado, opt-in explícito: requiere delegación externa
+	// deliberada, no hay que sorprender despliegues existentes).
+	DNSListen string
 	// LocalRoutes son destinos fijos fuera del túnel, ej. el SNI de la API
 	// hacia el contenedor de la API en la misma máquina.
 	LocalRoutes map[string]string
@@ -46,6 +51,7 @@ type Node struct {
 	api    *apiclient.Client
 	wg     *wgnet.Net
 	routes atomic.Pointer[map[string]netip.Addr]
+	dns    *dnsserver.Server
 	log    *slog.Logger
 }
 
@@ -54,7 +60,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("WGRELAY_NODE_TOKEN: %w", err)
 	}
-	n := &Node{cfg: cfg, api: apiclient.New(cfg.APIURL, cfg.Token), log: cfg.Log}
+	n := &Node{cfg: cfg, api: apiclient.New(cfg.APIURL, cfg.Token), dns: dnsserver.New(), log: cfg.Log}
 	empty := map[string]netip.Addr{}
 	n.routes.Store(&empty)
 
@@ -77,10 +83,11 @@ func Run(ctx context.Context, cfg Config) error {
 	defer n.wg.Close()
 	n.log.Info("nodo listo", "name", hello.Name, "gateway", gw, "wg_port", cfg.WGPort, "public_key", key.Public())
 
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	go func() { errc <- n.syncLoop(ctx) }()
 	go func() { errc <- n.serveTLS(ctx) }()
 	go func() { errc <- n.serveHTTP(ctx) }()
+	go func() { errc <- n.serveDNS(ctx) }()
 	select {
 	case err := <-errc:
 		return err
@@ -162,8 +169,41 @@ func (n *Node) apply(cfg proto.NodeConfig) error {
 		return err
 	}
 	n.routes.Store(&routes)
+	if cfg.DNS != nil {
+		n.dns.SetZone(dnsserver.Zone{
+			Name:       cfg.DNS.Zone,
+			NSNames:    cfg.DNS.NSNames,
+			SOAEmail:   cfg.DNS.SOAEmail,
+			Edge:       cfg.DNS.Edge,
+			Challenges: dnsChallenges(cfg.DNS.Challenges),
+		})
+	}
 	n.log.Info("configuración aplicada", "version", cfg.Version, "agentes", len(peers))
 	return nil
+}
+
+// dnsChallenges agrupa la lista plana que viaja por el protocolo en el mapa
+// fqdn->valores que dnsserver.Zone espera (varios valores concurrentes bajo
+// el mismo nombre son un caso soportado, ver internal/cloudflare).
+func dnsChallenges(txt []proto.DNSTXT) map[string][]string {
+	m := make(map[string][]string, len(txt))
+	for _, c := range txt {
+		m[c.FQDN] = append(m[c.FQDN], c.Value)
+	}
+	return m
+}
+
+// serveDNS sirve la zona clients.* como DNS autoritativo propio, si el
+// operador lo habilitó con WGRELAY_DNS_LISTEN. Deshabilitado (default) tiene
+// que bloquear hasta ctx.Done() como cualquier otro listener, no retornar
+// enseguida: el primer valor que llega a errc en Run() termina el proceso.
+func (n *Node) serveDNS(ctx context.Context) error {
+	if n.cfg.DNSListen == "" {
+		<-ctx.Done()
+		return nil
+	}
+	n.log.Info("DNS autoritativo propio escuchando", "addr", n.cfg.DNSListen)
+	return n.dns.Serve(ctx, n.cfg.DNSListen)
 }
 
 func (n *Node) serveTLS(ctx context.Context) error {

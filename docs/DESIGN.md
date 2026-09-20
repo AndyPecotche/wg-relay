@@ -186,7 +186,7 @@ La abstracción es `internal/dnsprovider.Provider` (`EnsureCNAME`, `CreateTXT`,
 |---|---|---|
 | `cloudflare` (default si hay token) | `internal/cloudflare`, cliente propio sin dependencias extra | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` |
 | `webhook` | `dnsprovider.Webhook`: llama a un servicio HTTP propio del operador (`POST /cname`, `POST /txt`, `DELETE /txt/{id}`) | `WGRELAY_DNS_WEBHOOK_URL`, `WGRELAY_DNS_WEBHOOK_TOKEN` |
-| *(vacío)* | Ninguno: `dns sync` imprime los registros para cargarlos a mano, y el endpoint de DNS-01 delegado responde 501 | — |
+| *(vacío)* | Ninguno: `dns sync` imprime los registros para cargarlos a mano, y el endpoint de DNS-01 delegado responde 501, salvo que el DNS propio (§4.3.1) esté habilitado | — |
 
 `webhook` es el camino para cualquier proveedor que no sea Cloudflare
 (Route53, DigitalOcean, OVH, un DNS propio, ...): en vez de vendorizar el SDK
@@ -205,6 +205,59 @@ Antes de abrir el servicio a terceros: **mover los clientes a un dominio
 dedicado** (una zona propia, con su propio token). Es un cambio de variables
 de entorno y un `dns sync`. Coincide con el paso previo a la Public Suffix
 List (§6.4).
+
+### 4.3.1 DNS propio en los nodos (self-hosted)
+
+Una tercera opción, sin proveedor externo de ningún tipo: los propios nodos
+sirven `WGRELAY_BASE_DOMAIN` (`clients.wg-relay.andy.net.ar`) como DNS
+autoritativo (`internal/dnsserver`). El único paso manual, de una sola vez,
+es delegar ese subárbol por NS en el registrador de la zona padre — sin
+token, sin cuota, sin `"proveedor de DNS no configurado"`.
+
+**Por qué un catch-all, no un registro por tunnel.** A diferencia del ruteo
+SNI del nodo (§5.1), que sí necesita precisión por tunnel, el DNS no la
+necesita: todo subdominio de cliente resuelve a lo mismo, el conjunto de IPs
+públicas de los nodos activos — la decisión de a qué agente va cada conexión
+ya la toma el nodo por SNI, no el DNS. Eso permite una única regla de
+respuesta sin enumerar tunnels, y de paso esquiva el problema de RFC 4592
+(§4.2): esa restricción es sobre la síntesis de comodín de un servidor DNS
+genérico (zona/BIND-style), y acá la respuesta la arma nuestro propio código,
+no un motor de zonas.
+
+Algoritmo de `internal/dnsserver.Answer` para cualquier nombre bajo la zona:
+
+1. `SOA`/`NS` en el ápice → estático, de `WGRELAY_DNS_NS_NAMES` (FQDNs de
+   nameserver ya declarados en el registrador) y `WGRELAY_DNS_SOA_EMAIL`.
+   Deliberadamente **no** se deriva del conjunto de nodos activos: el NS que
+   contestamos tiene que ser la misma foto fija que el registrador conoce.
+2. `TXT` que coincide con un desafío ACME vigente (tabla `dns_challenge`,
+   ahora con el valor guardado siempre, no solo en un proveedor externo) →
+   sus valores.
+3. Cualquier otro nombre (el ápice mismo, `<sub>.clients.*`,
+   `*.<sub>.clients.*`, lo que sea) → A con las IPs públicas de todos los
+   nodos activos (`node.public_ip`, cargada con `node create --public-ip` o
+   `node set-public-ip`).
+4. Fuera de la zona → `REFUSED`, nunca forwarding: un nameserver autoritativo
+   real no es un resolver abierto.
+5. Cualquier otro caso (tipo no soportado, SOA/NS fuera del ápice, TXT sin
+   match, o A sin nodos activos) → **NODATA** (NOERROR + SOA en autoridad),
+   nunca NXDOMAIN: el nombre conceptualmente existe, solo no hay ese dato
+   ahora mismo.
+
+`api.wg-relay.andy.net.ar` y `nodeN.wg-relay.andy.net.ar` (§4.2) quedan
+**fuera** de lo delegado y siguen siendo altas manuales en la zona padre,
+como hoy — no es una pérdida, es simplemente no tocar lo que ya funciona; y
+evita necesitar *glue records* (el nombre de un nameserver dentro de la zona
+que él mismo delega) para esta primera versión.
+
+El dato dinámico (IPs de nodos activos, desafíos TXT vigentes) viaja por el
+mismo long-poll que ya usan los nodos para su tabla de ruteo SNI (§5.1,
+`GET /v1/node/config`, `proto.NodeConfig.DNS`): sin mecanismo nuevo, y con la
+misma propiedad de sobrevivir a una caída de la API que ya tienen las
+conexiones en curso (§15).
+
+Decisión #15 (§14): reusar el long-poll y el mismo `certmagic`/almacén
+existentes en vez de un canal de sincronización aparte.
 
 ---
 
@@ -313,12 +366,13 @@ volvería a cada uno capaz de reescribir el DNS de cualquier otro tunnel, o el
 de la propia API — rompe el aislamiento por tenant que ya es la base del
 diseño (decisión #12, §14). Por eso acá el DNS-01 lo resuelve **el control
 plane**, nunca el agente. El agente pide el certificado a Let's Encrypt y
-resuelve el challenge
-llamando a `POST /v1/agent/acme-dns` (que valida que el FQDN caiga dentro del
-dominio del tunnel autenticado, escribe el TXT en el proveedor DNS
-configurado —§4.3— y lo borra al terminar) mediante un proveedor `libdns`
-propio (`internal/agent/dns01.go`).
-Soporta **wildcard** y es independiente del data plane.
+resuelve el challenge llamando a `POST /v1/agent/acme-dns` (que valida que el
+FQDN caiga dentro del dominio del tunnel autenticado, guarda el TXT en la
+base —de donde lo sirve el DNS propio de los nodos si está habilitado,
+§4.3.1— y además en el proveedor externo si hay uno configurado —§4.3— y lo
+borra al terminar) mediante un proveedor `libdns` propio
+(`internal/agent/dns01.go`). Soporta **wildcard** y es independiente del data
+plane.
 
 Rate limit de 10 ráfaga / ~30 por minuto por tunnel, en memoria del proceso
 (`internal/api/api.go`, `dnsLimiter`): no se comparte entre réplicas de la API
@@ -467,7 +521,7 @@ reinicios sin guardar nada en disco, y el control plane no puede calcularla.
 
 | Componente | Puertos públicos | Secretos que tiene |
 |---|---|---|
-| Nodo | 443/tcp, 80/tcp, 51820/udp | Su propio token |
+| Nodo | 443/tcp, 80/tcp, 51820/udp, 53/tcp+udp (opcional, DNS propio §4.3.1) | Su propio token |
 | API | Ninguno (entra por el nodo) | Credencial del proveedor DNS (§4.3), hashes de tokens |
 | Postgres | Ninguno | — |
 | Agente | Ninguno | Su token |
@@ -607,6 +661,7 @@ al plan pago.
 | **F0** | DB, tokens, leases, túnel WG userspace, router SNI, passthrough, redirect :80, CLI de admin, DNS automático, e2e | ✅ |
 | **F1a** | Modo `terminate`: almacén cifrado de certs, TLS-ALPN-01, HTTP y TCP (`tcp://`) | ✅ |
 | **F1b** | ACME DNS-01 delegado (dominio asignado): certificados wildcard y `export_cert` | ✅ |
+| **F1c** | DNS propio en los nodos para clients.* (self-hosted, sin proveedor externo) | ✅ |
 | **F2** | Dominios propios: verificación DNS y DNS-01 del lado del agente (token, CNAME delegado o manual) | |
 | **F3** | Métricas y cuotas de tráfico; rate limiting general de la API | |
 | — | Puertos TCP dedicados, UDP, autoservicio de registro (§16), PSL | Futuro |
@@ -631,6 +686,7 @@ al plan pago.
 | 12 | Un token = un servidor | Varios agentes activos por token | Unidad de aislamiento y cuota |
 | 13 | Un `certmagic.Config`/emisor ACME por tipo de desafío | Un solo emisor con todos los solvers juntos | acmez puede preferir dns-01 sobre TLS-ALPN-01 aunque no haga falta, acoplando certificados simples al proveedor DNS |
 | 14 | Interfaz `dnsprovider.Provider` propia + webhook para "cualquier otro" | Vendorizar un SDK por proveedor (Route53, DigitalOcean, ...) | Cada SDK de nube trae su propio árbol de dependencias (el de AWS por sí solo son ~15 módulos) en el binario de *todos*, lo usen o no; el webhook delega ese costo a quien realmente lo necesita |
+| 15 | DNS propio de `clients.*` con catch-all (`internal/dnsserver`) sobre el mismo long-poll de configuración de los nodos | Zona completa `wg-relay.andy.net.ar` con glue records; o un registro por tunnel | Sin glue: los nameservers quedan fuera de lo delegado. Sin registro por tunnel: el DNS no necesita la precisión que sí necesita el ruteo SNI (§5.1) |
 
 ---
 
@@ -647,3 +703,8 @@ al plan pago.
   existentes sobreviven a su caída, pero hace falta backup de Postgres.
 - **Límite de registros del proveedor DNS** — con Cloudflare, dos por tunnel;
   verificar el tope del plan (o del proveedor que se use) antes de crecer.
+- **Delegación de DNS propio (§4.3.1) es manual y externa** — wg-relay no
+  tiene forma de tocar la zona padre. Si la IP pública de un nodo declarado
+  como nameserver cambia, hay que actualizar a mano el registro A de
+  `nsN.wg-relay.andy.net.ar` en el registrador, o esa delegación queda
+  "coja" (lame) hasta corregirlo.

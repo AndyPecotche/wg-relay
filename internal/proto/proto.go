@@ -66,9 +66,26 @@ type NodeHelloResponse struct {
 // NodeConfig es la foto completa que un nodo necesita para operar.
 // Version es un hash del contenido: cambia si y solo si cambia la foto.
 type NodeConfig struct {
-	Version string  `json:"version"`
-	Peers   []Peer  `json:"peers"`
-	Routes  []Route `json:"routes"`
+	Version string   `json:"version"`
+	Peers   []Peer   `json:"peers"`
+	Routes  []Route  `json:"routes"`
+	DNS     *DNSZone `json:"dns,omitempty"` // nil si el DNS propio no está habilitado
+}
+
+// DNSZone es la zona clients.* que el nodo puede servir como DNS
+// autoritativo propio (internal/dnsserver), si además bindea
+// WGRELAY_DNS_LISTEN. Ver DESIGN.md.
+type DNSZone struct {
+	Zone       string   `json:"zone"`     // ej. "clients.wg-relay.andy.net.ar"
+	NSNames    []string `json:"ns_names"` // FQDNs de nameserver, estático, admin
+	SOAEmail   string   `json:"soa_email"`
+	Edge       []string `json:"edge"`       // IPs públicas de nodos activos
+	Challenges []DNSTXT `json:"challenges"` // TXT vigentes de ACME DNS-01
+}
+
+type DNSTXT struct {
+	FQDN  string `json:"fqdn"`
+	Value string `json:"value"`
 }
 
 type Peer struct {

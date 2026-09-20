@@ -19,7 +19,7 @@ dc up -d --wait postgres api mockcf >/dev/null
 out=$(dc exec -T api wgrelay-api tunnel create --email e2e@test)
 export AGENT_TOKEN=$(echo "$out" | grep -o 'wgr_[a-z0-9_]*')
 DOMAIN=$(echo "$out" | awk '/dominio:/{print $2}')
-export NODE_TOKEN=$(dc exec -T api wgrelay-api node create --name node1 --endpoint node:51820 | grep -o 'wgn_[a-z0-9_]*')
+export NODE_TOKEN=$(dc exec -T api wgrelay-api node create --name node1 --endpoint node:51820 --public-ip 203.0.113.10 | grep -o 'wgn_[a-z0-9_]*')
 export TERMINATE_HOST="web.$DOMAIN"
 export TERMINATE_HOST_TCP="mqttterm.$DOMAIN"
 WILDCARD_HOST="cualquiercosa.wild.$DOMAIN"
@@ -140,7 +140,47 @@ for i in $(seq 1 40); do out=$(mqtt_roundtrip); [ "$out" = "ok" ] && break; slee
 [ "$out" = "ok" ] || fail "MQTT sobre terminate tcp:// no funcionó (out=$out)"
 echo "   ok"
 
-echo "13. rotar el token desconecta al agente"
+echo "13. DNS autoritativo propio del nodo (clients.e2e.test, sin Cloudflare)"
+dnsq() {
+  docker run --rm --network wgrelay-e2e_default \
+    -v "$PWD/dnsquery:/src:ro" -v gomod_cache:/go/pkg/mod -w /src \
+    golang:1-alpine go run . -server node:5300 "$@" 2>/dev/null
+}
+curl_e2e() { docker run --rm --network wgrelay-e2e_default curlimages/curl -s "$@"; }
+
+dnsq -type SOA -name clients.e2e.test | grep -q 'hostmaster' || fail "SOA del ápice no respondió"
+dnsq -type NS -name clients.e2e.test | grep -q 'ns1.e2e.test' || fail "NS del ápice no respondió"
+dnsq -type A -name "$DOMAIN" | grep -q '203.0.113.10' || fail "catch-all no devolvió la IP del nodo activo"
+dnsq -type A -name "cualquiercosa.$DOMAIN" | grep -q '203.0.113.10' || fail "catch-all no cubrió un subdominio no enumerado"
+dnsq -type A -name "otra-cosa.invalid" -expect-refused >/dev/null || fail "respondió autoritativamente fuera de su zona"
+
+# Ciclo completo de un TXT real: crear vía la API, ver que se sirve, borrar,
+# ver que desaparece. Ejercita toda la cadena API -> DB -> long-poll ->
+# node.apply() -> dnsserver.Zone -> respuesta UDP/TCP real. Va antes de
+# rotar el token (paso 14): usa $AGENT_TOKEN, que ese paso invalida.
+challenge_id=$(curl_e2e -X POST -H "Authorization: Bearer $AGENT_TOKEN" \
+  -d '{"fqdn":"_acme-challenge.'"$DOMAIN"'","value":"selfhosted-e2e-value"}' \
+  "http://api:8080/v1/agent/acme-dns" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+[ -n "$challenge_id" ] || fail "no se pudo crear el desafío TXT de prueba"
+ok=""
+for i in $(seq 1 10); do
+  ok=$(dnsq -type TXT -name "_acme-challenge.$DOMAIN" | grep -c 'selfhosted-e2e-value' || true)
+  [ "$ok" = "1" ] && break
+  sleep 1
+done
+[ "$ok" = "1" ] || fail "el TXT autohospedado no se sirvió"
+curl_e2e -o /dev/null -X DELETE -H "Authorization: Bearer $AGENT_TOKEN" \
+  "http://api:8080/v1/agent/acme-dns/$challenge_id"
+gone=""
+for i in $(seq 1 10); do
+  gone=$(dnsq -type TXT -name "_acme-challenge.$DOMAIN" | grep -c 'selfhosted-e2e-value' || true)
+  [ "$gone" = "0" ] && break
+  sleep 1
+done
+[ "$gone" = "0" ] || fail "el TXT autohospedado no se borró"
+echo "   ok"
+
+echo "14. rotar el token desconecta al agente"
 dc exec -T api wgrelay-api tunnel rotate-token --id 1 >/dev/null
 for i in $(seq 1 25); do dc ps agent2 --status exited | grep -q agent2 && break; sleep 1; done
 dc logs agent2 | grep -q 'rechazó el token' || fail "agent2 no detectó el token rotado"

@@ -26,19 +26,57 @@ proxy de Cloudflare activado, Cloudflare terminaría el TLS y nada funcionaría.
 - [ ] `wg-relay` → **A** → IP de la VM 1
 - [ ] `node1.wg-relay` → **A** → IP de la VM 1
 
-### Cloudflare API (opcional, recomendado)
+### DNS de `clients.*`: proveedor externo o propio (elegí uno)
 
-Sin esto, cada vez que des de alta un cliente la API te imprime dos registros
-para crear a mano.
+Sin ninguno de los dos, cada vez que des de alta un cliente la API te imprime
+los registros para crearlos a mano. Dos caminos, ver DESIGN.md §4.3:
+
+#### Opción A — Cloudflare (opcional)
 
 - [ ] Crear token en *My Profile → API Tokens → Create Token → Edit zone DNS*,
       zona `andy.net.ar`.
 - [ ] Copiar el *Zone ID* (panel de la zona, columna derecha, "API").
+- [ ] Completar `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID` en `.env`.
 
 > Cloudflare no permite limitar un token a un subdominio: este token puede
 > editar toda la zona `andy.net.ar`. El código solo escribe bajo el dominio
 > base, pero si en algún momento abrís el servicio a terceros conviene mover
 > los clientes a un dominio dedicado (ver DESIGN.md §4.3).
+
+#### Opción B — DNS propio en los nodos (sin token, sin cuota)
+
+Los nodos sirven ellos mismos `clients.wg-relay.andy.net.ar` como DNS
+autoritativo (`internal/dnsserver`, DESIGN.md §4.3.1). El único paso es
+delegar ese subdominio por NS — sin glue records, porque los nombres de los
+nameservers quedan afuera de lo delegado:
+
+- [ ] En Cloudflare (zona `andy.net.ar`), crear dos registros A comunes para
+      los nodos que van a ser nameservers, ej. `ns1.wg-relay` → IP de node1,
+      `ns2.wg-relay` → IP de node2 (con al menos dos, la delegación sigue
+      funcionando si uno cae).
+- [ ] Crear dos registros **NS** delegando el subdominio:
+      `clients.wg-relay` → `ns1.wg-relay.andy.net.ar.` y
+      `ns2.wg-relay.andy.net.ar.`.
+- [ ] En `.env` de la API: `WGRELAY_DNS_NS_NAMES=ns1.wg-relay.andy.net.ar,ns2.wg-relay.andy.net.ar`
+      y `WGRELAY_DNS_SOA_EMAIL=admin@andy.net.ar`.
+- [ ] En `.env`/compose de **cada** nodo que declaraste como NS (node1, node2):
+      descomentar `WGRELAY_DNS_LISTEN` y los puertos `53:5300/udp`+`53:5300/tcp`.
+- [ ] En `node create`, pasarle `--public-ip` a **todos** los nodos (no solo a
+      los declarados como NS): esa IP es la que se sirve en las respuestas A.
+- [ ] Verificar (puede tardar mientras se propaga la delegación en el mundo,
+      pero la consulta directa al nameserver no depende de eso):
+      ```sh
+      dig NS clients.wg-relay.andy.net.ar @ns1.wg-relay.andy.net.ar
+      dig A cualquiercosa.clients.wg-relay.andy.net.ar @ns1.wg-relay.andy.net.ar
+      ```
+
+> **`systemd-resolved` suele ocupar el `:53` del host.** Si `docker compose
+> up` falla al publicar `53:5300`, es casi siempre eso — es justamente por lo
+> que el contenedor escucha en `:5300` y se mapea al `53` público, no al
+> revés.
+
+Los dos caminos son independientes: podés tener ambos configurados a la vez
+(por ejemplo, mientras migrás de uno a otro), o ninguno.
 
 ### Firewall de la VM
 
@@ -58,9 +96,11 @@ cp .env.example .env
   ```sh
   docker compose up -d --build postgres api
   ```
-- [ ] Crear el nodo y copiar el token que imprime a `WGRELAY_NODE_TOKEN` en `.env`:
+- [ ] Crear el nodo y copiar el token que imprime a `WGRELAY_NODE_TOKEN` en `.env`
+      (`--public-ip` es opcional, hace falta solo para DNS propio, opción B de
+      arriba):
   ```sh
-  docker compose exec api wgrelay-api node create --name node1 --endpoint node1.wg-relay.andy.net.ar:51820
+  docker compose exec api wgrelay-api node create --name node1 --endpoint node1.wg-relay.andy.net.ar:51820 --public-ip 203.0.113.10
   ```
 - [ ] Levantar todo:
   ```sh
@@ -83,9 +123,10 @@ cp .env.example .env
 docker compose exec api wgrelay-api tunnel create --email colega@ejemplo.com
 ```
 
-Imprime el dominio asignado y el token (**una sola vez**). Si Cloudflare está
-configurado, los registros DNS se crean solos; si no, los imprime para crearlos
-a mano.
+Imprime el dominio asignado y el token (**una sola vez**). Si hay un proveedor
+DNS externo configurado (Cloudflare/webhook), los registros se crean solos;
+con DNS propio no hace falta crear nada (ya es resoluble); sin ninguno de los
+dos, los imprime para crearlos a mano.
 
 Otros comandos:
 
@@ -109,9 +150,11 @@ Por cada VM nueva:
 
 ### En la VM de la API
 
-- [ ] Crear el nodo y guardar el token:
+- [ ] Crear el nodo y guardar el token (`--public-ip` si usás DNS propio,
+      opción B de la Parte 1 — todos los nodos cuentan para el set de IPs que
+      contesta, no solo los declarados como nameserver):
   ```sh
-  docker compose exec api wgrelay-api node create --name node2 --endpoint node2.wg-relay.andy.net.ar:51820
+  docker compose exec api wgrelay-api node create --name node2 --endpoint node2.wg-relay.andy.net.ar:51820 --public-ip 203.0.113.11
   ```
 
 ### En la VM nueva
