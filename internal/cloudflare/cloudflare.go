@@ -9,19 +9,32 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
-const apiBase = "https://api.cloudflare.com/client/v4"
+const defaultAPIBase = "https://api.cloudflare.com/client/v4"
 
 type Client struct {
-	token  string
-	zoneID string
-	http   *http.Client
+	token   string
+	zoneID  string
+	apiBase string
+	http    *http.Client
 }
 
+// New crea un cliente contra la API real de Cloudflare.
 func New(token, zoneID string) *Client {
-	return &Client{token: token, zoneID: zoneID, http: &http.Client{Timeout: 20 * time.Second}}
+	return NewWithBaseURL(token, zoneID, defaultAPIBase)
+}
+
+// NewWithBaseURL permite apuntar a otra URL base (para tests: un servidor
+// que imite el subconjunto de la API que este cliente usa).
+func NewWithBaseURL(token, zoneID, baseURL string) *Client {
+	if baseURL == "" {
+		baseURL = defaultAPIBase
+	}
+	return &Client{token: token, zoneID: zoneID, apiBase: strings.TrimSuffix(baseURL, "/"),
+		http: &http.Client{Timeout: 20 * time.Second}}
 }
 
 type record struct {
@@ -31,6 +44,16 @@ type record struct {
 	Content string `json:"content"`
 	TTL     int    `json:"ttl"`
 	Proxied bool   `json:"proxied"`
+}
+
+// txtRecord omite "proxied": Cloudflare no lo acepta en registros que no son
+// A/AAAA/CNAME.
+type txtRecord struct {
+	ID      string `json:"id,omitempty"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Content string `json:"content"`
+	TTL     int    `json:"ttl"`
 }
 
 // EnsureCNAME crea o corrige name -> target. Siempre sin proxy de Cloudflare
@@ -51,6 +74,27 @@ func (c *Client) EnsureCNAME(ctx context.Context, name, target string) error {
 	return c.do(ctx, http.MethodPatch, "/dns_records/"+existing[0].ID, want, nil)
 }
 
+// CreateTXT agrega un registro TXT nuevo, sin tocar los que ya existan bajo el
+// mismo nombre. Es intencional: un desafío ACME de comodín (ej. *.example.com
+// y example.com juntos) puede necesitar dos TXT distintos y simultáneos bajo
+// el mismo _acme-challenge, diferenciados solo por su valor. Devuelve el ID
+// del registro creado, para poder borrarlo puntualmente después.
+func (c *Client) CreateTXT(ctx context.Context, name, value string) (id string, err error) {
+	var rec txtRecord
+	err = c.do(ctx, http.MethodPost, "/dns_records", txtRecord{Type: "TXT", Name: name, Content: value, TTL: 60}, &rec)
+	return rec.ID, err
+}
+
+// DeleteRecord borra un registro por ID. Si ya no existe, Cloudflare devuelve
+// un error que tratamos como éxito: el estado final deseado ya está logrado.
+func (c *Client) DeleteRecord(ctx context.Context, id string) error {
+	err := c.do(ctx, http.MethodDelete, "/dns_records/"+id, nil, nil)
+	if err != nil && strings.Contains(err.Error(), "81044") { // record does not exist
+		return nil
+	}
+	return err
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var r *bytes.Reader
 	if body != nil {
@@ -59,7 +103,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	} else {
 		r = bytes.NewReader(nil)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, apiBase+"/zones/"+c.zoneID+path, r)
+	req, err := http.NewRequestWithContext(ctx, method, c.apiBase+"/zones/"+c.zoneID+path, r)
 	if err != nil {
 		return err
 	}

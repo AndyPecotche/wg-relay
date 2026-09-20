@@ -1,3 +1,4 @@
 .env
 /bin/
 /test/e2e/minica.pem
+/test/e2e/pebble-root.pem

@@ -99,12 +99,18 @@ func (a *Agent) session(ctx context.Context) error {
 	t := &tunnel{agent: a, wg: wg, routes: routes, domain: reg.Domain}
 	// Las rutas terminate necesitan certificado: se piden en segundo plano,
 	// así que un fallo de ACME no impide que el resto del túnel funcione.
-	term, err := newTerminator(ctx, routes, a.storage, a.cfg.File.ACME, a.log)
+	term, err := newTerminator(ctx, routes, a.storage, a.api, a.cfg.File.ACME, a.log)
 	if err != nil {
 		return ErrFatal{err}
 	}
 	defer term.close()
 	t.term = term
+
+	exp, err := newExporter(ctx, routes, a.storage, a.api, a.cfg.File.ACME, a.log)
+	if err != nil {
+		return ErrFatal{err}
+	}
+	defer exp.close()
 	if err := t.setNodes(ctx, reg.Nodes); err != nil {
 		a.log.Warn("configurando nodos", "err", err)
 	}

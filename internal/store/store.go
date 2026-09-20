@@ -404,6 +404,41 @@ func (s *Store) StorageList(ctx context.Context, tunnelID int64, prefix string) 
 	})
 }
 
+// ------------------------------------------------- DNS-01 delegado (F1b)
+
+// CreateDNSChallenge registra qué tunnel es dueño de un registro TXT de
+// Cloudflare, para poder autorizar su borrado después sin exponerle al
+// agente el ID real del proveedor DNS.
+func (s *Store) CreateDNSChallenge(ctx context.Context, tunnelID int64, fqdn, cfRecordID string) (string, error) {
+	id := auth.Random(10)
+	_, err := s.db.Exec(ctx, `INSERT INTO dns_challenge(id, tunnel_id, fqdn, cf_record_id) VALUES ($1, $2, $3, $4)`,
+		id, tunnelID, fqdn, cfRecordID)
+	return id, err
+}
+
+// DNSChallengeRecordID devuelve el ID de Cloudflare de un desafío, solo si
+// pertenece al tunnel dado.
+func (s *Store) DNSChallengeRecordID(ctx context.Context, tunnelID int64, id string) (string, error) {
+	var cfRecordID string
+	err := s.db.QueryRow(ctx, `SELECT cf_record_id FROM dns_challenge WHERE id = $1 AND tunnel_id = $2`,
+		id, tunnelID).Scan(&cfRecordID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return cfRecordID, err
+}
+
+func (s *Store) DeleteDNSChallenge(ctx context.Context, tunnelID int64, id string) error {
+	tag, err := s.db.Exec(ctx, `DELETE FROM dns_challenge WHERE id = $1 AND tunnel_id = $2`, id, tunnelID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func offsetAddr(p netip.Prefix, off int64) (netip.Addr, error) {
 	if off <= 0 || off >= 1<<(32-p.Bits()) {
 		return netip.Addr{}, fmt.Errorf("pool de IPs %s agotado", p)

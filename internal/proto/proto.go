@@ -9,6 +9,7 @@ const (
 	ErrSuperseded   = "superseded" // esta instancia perdió el lease
 	ErrBadRequest   = "bad_request"
 	ErrNotFound     = "not_found"
+	ErrRateLimited  = "rate_limited"
 	ErrInternal     = "internal"
 )
 
@@ -85,6 +86,15 @@ type StorageItem struct {
 
 type StorageList struct {
 	Items []StorageItem `json:"items"`
+}
+
+type ACMEDNSCreateRequest struct {
+	FQDN  string `json:"fqdn"`
+	Value string `json:"value"`
+}
+
+type ACMEDNSCreateResponse struct {
+	ID string `json:"id"`
 }
 
 // Route asocia un hostname (exacto o "*.dominio") con la IP VPN de un agente.

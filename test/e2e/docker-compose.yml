@@ -12,7 +12,27 @@ services:
       WGRELAY_DATABASE_URL: postgres://wgrelay:wgrelay@postgres/wgrelay
       WGRELAY_BASE_DOMAIN: clients.e2e.test
       WGRELAY_EDGE_HOST: edge.e2e.test
+      # mockcf imita la API de Cloudflare y sirve DNS: habilita el endpoint
+      # de DNS-01 delegado (F1b) sin tocar una cuenta real.
+      CLOUDFLARE_API_TOKEN: dummy
+      CLOUDFLARE_ZONE_ID: e2e
+      CLOUDFLARE_API_BASE_URL: http://mockcf:8080/client/v4
     depends_on: {postgres: {condition: service_healthy}}
+
+  # Imita la API de Cloudflare (escribe TXT) y sirve un DNS de juguete que
+  # Pebble usa para validar DNS-01, sin tocar una cuenta real ni el DNS
+  # público (nuestro dominio de prueba clients.e2e.test no existe ahí).
+  mockcf:
+    image: golang:1-alpine
+    working_dir: /src
+    volumes:
+      - "./mockcf:/src:ro"
+      - "gomod_cache:/go/pkg/mod"
+    command: ["go", "run", "."]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
+      interval: 1s
+      retries: 60
 
   node:
     image: wgrelay-node:dev
@@ -42,7 +62,9 @@ services:
   # nodo, que es el mismo camino que recorre el trafico real.
   pebble:
     image: ghcr.io/letsencrypt/pebble:latest
-    command: ["-config", "/test/config/pebble-config.json"]
+    # -dnsserver: para validar DNS-01, en vez del DNS público (nuestro
+    # dominio de prueba clients.e2e.test no existe ahí).
+    command: ["-config", "/test/config/pebble-config.json", "-dnsserver", "mockcf:8053"]
     environment: [PEBBLE_VA_NOSLEEP=1]
     # El :15000 publica la raiz efimera con la que Pebble firma, para validar
     # desde el host los certificados que emite.
@@ -62,6 +84,15 @@ services:
     volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
     profiles: [relay]
 
+  # La imagen del agente corre sin privilegios (UID 65532); el volumen de
+  # export_cert nace de root, así que hace falta darle permiso una vez.
+  certs-init:
+    image: busybox
+    user: root
+    command: ["chown", "-R", "65532:65532", "/certs"]
+    volumes: ["exported_certs:/certs"]
+    profiles: [relay]
+
   agent:
     image: wgrelay-agent:dev
     environment:
@@ -70,6 +101,8 @@ services:
     volumes:
       - "./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"
       - "./minica.pem:/pebble/minica.pem:ro"
+      - "exported_certs:/certs"
+    depends_on: {certs-init: {condition: service_completed_successfully}}
     profiles: [relay]
 
   agent2:
@@ -79,4 +112,9 @@ services:
     volumes:
       - "./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro"
       - "./minica.pem:/pebble/minica.pem:ro"
+      - "exported_certs:/certs"
     profiles: [standby]
+
+volumes:
+  exported_certs:
+  gomod_cache:

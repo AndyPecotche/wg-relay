@@ -31,6 +31,10 @@ type ACME struct {
 	// Ruta a un PEM con las raíces que se confían al hablar con la CA. Solo
 	// hace falta con una CA privada (step-ca, Pebble, PKI interna).
 	TrustedRoots string `yaml:"trusted_roots"`
+	// Resolvers DNS a usar para propagación y verificación de zona en
+	// DNS-01 (host:puerto). Vacío usa los del sistema. Solo hace falta en
+	// redes con DNS split-horizon, o para pruebas con un servidor propio.
+	DNSResolvers []string `yaml:"dns_resolvers"`
 }
 
 const LetsEncryptProduction = "https://acme-v02.api.letsencrypt.org/directory"
@@ -50,6 +54,11 @@ type RouteSpec struct {
 	Mode          string `yaml:"mode"` // passthrough | terminate
 	To            string `yaml:"to"`   // host:puerto alcanzable desde el agente
 	ProxyProtocol bool   `yaml:"proxy_protocol"`
+	// ExportCert, solo válido en passthrough: el agente obtiene el
+	// certificado (por DNS-01, el único desafío que puede resolver una ruta
+	// que no termina) y deja fullchain.pem/privkey.pem en este directorio,
+	// reescribiéndolos en cada renovación.
+	ExportCert string `yaml:"export_cert"`
 }
 
 const (
@@ -102,6 +111,9 @@ func LoadFile(path string) (File, error) {
 			}
 		default:
 			return File{}, fmt.Errorf("ruta %q: modo %q desconocido", r.Host, r.Mode)
+		}
+		if r.ExportCert != "" && r.Mode != ModePassthrough {
+			return File{}, fmt.Errorf("ruta %q: export_cert solo es válido en mode: passthrough (en terminate el agente ya usa el certificado, no hace falta exportarlo)", r.Host)
 		}
 	}
 	return f, nil

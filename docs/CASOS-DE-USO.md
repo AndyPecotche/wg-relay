@@ -30,7 +30,7 @@ el agente con tu servicio**.
 | `terminate` HTTP | `http://api:3000` | el agente | HTTP plano | ✅ |
 | `terminate` TCP | `tcp://emqx:1883` | el agente | TCP plano | ✅ |
 | `passthrough` | `emqx:8883` | tu servicio | TLS | ✅ |
-| `tcp` (puerto dedicado) | `postgres:5432` | nadie | TCP plano | ❌ futuro (§6.2) |
+| `tcp` (puerto dedicado) | `postgres:5432` | nadie | TCP plano | ❌ futuro (§6.1) |
 
 ```
 terminate   internet ──TLS──► nodo ──► agente ──[descifra]──► servicio (plano)
@@ -156,18 +156,21 @@ Los certificados se guardan **cifrados en el control plane**, con una clave
 derivada del token que el servicio no puede calcular. Por eso el agente no
 necesita volúmenes y sobrevive a reinicios sin reemitir.
 
-**Limitación:** TLS-ALPN-01 no emite comodines. Hoy hay que declarar cada
-subdominio. Con DNS-01 (§6.1) eso desaparece.
+**Limitación:** TLS-ALPN-01 no emite comodines. Para eso, declarar la ruta
+como `host: "*"` (o `"*.dev"`, etc.): el agente detecta el comodín y pide el
+certificado por DNS-01 en su lugar, automáticamente (ver
+[DESIGN.md §6.2.1](DESIGN.md)).
 
 Funciona igual para HTTP y para TCP: `to: http://api:3000` proxea HTTP,
 `to: tcp://emqx:1883` termina el TLS y entrega bytes crudos. El certificado
 se obtiene de la misma forma en los dos casos; lo único que cambia es qué
 hace el agente con la conexión ya descifrada.
 
-### 3.2 Se los damos exportados (`export_cert`) ❌ falta
+### 3.2 Se los damos exportados (`export_cert`) ✅
 
-Planeado para F1b: el agente obtiene un certificado **comodín** vía DNS-01
-delegado y deja `fullchain.pem` y `privkey.pem` en una carpeta.
+El agente obtiene el certificado (comodín o puntual, según el host) vía
+DNS-01 delegado y deja `fullchain.pem` y `privkey.pem` en una carpeta,
+reescribiéndolos en cada renovación.
 
 ```yaml
 routes:
@@ -178,7 +181,12 @@ routes:
 ```
 
 Es la respuesta para quien quiere que su servicio termine el TLS él mismo pero
-sin pelearse con certbot.
+sin pelearse con certbot. Solo válido en `passthrough`: en `terminate` el
+agente ya usa el certificado, no hace falta exportarlo.
+
+> El directorio de `export_cert` tiene que ser escribible por el agente, que
+> corre sin privilegios (UID 65532 en la imagen oficial). Con un volumen
+> nuevo, `chown -R 65532:65532` una vez alcanza.
 
 ### 3.3 Se los consigue el usuario (modo `passthrough`) ✅
 
@@ -268,18 +276,7 @@ visitante al proxy del usuario; sin eso, vería siempre la IP del túnel.
 
 ## 6. Lo que falta
 
-### 6.1 Certificados comodín y `export_cert` ❌ (F1b)
-
-Necesitan DNS-01 delegado: un endpoint en el control plane que escriba el TXT
-del challenge en Cloudflare, validando que el nombre cae dentro de la zona del
-tunnel autenticado. Habilita:
-
-- Un solo certificado `*.<sub>` para todos los subdominios del usuario.
-- `export_cert`, para quien quiera terminar TLS por su cuenta (§3.2).
-- Certificados para hostnames en `passthrough`, donde el challenge nunca
-  llegaría al agente.
-
-### 6.2 Puertos dedicados (TCP y UDP crudos) ❌ futuro
+### 6.1 Puertos dedicados (TCP y UDP crudos) ❌ futuro
 
 Todo lo anterior vive sobre el `:443` y se multiplexa por SNI, así que
 **requiere que el cliente hable TLS y envíe SNI**. Queda afuera:
@@ -305,13 +302,13 @@ reservado para un plan pago.
 | Comodín para que el usuario haga lo que quiera con su propio proxy | ✅ |
 | IP real del visitante hacia el backend (PROXY protocol) | ✅ |
 | Failover: dos servidores con el mismo token, el segundo espera | ✅ |
-| Certificado comodín y `export_cert` | ❌ §6.1 |
+| Certificado comodín y `export_cert` | ✅ |
 | Dominio propio del usuario | ❌ §4 |
-| Clientes sin SNI, protocolos sin TLS, UDP | ❌ §6.2 |
+| Clientes sin SNI, protocolos sin TLS, UDP | ❌ §6.1 |
 
 ### Orden sugerido
 
-1. **§6.1 DNS-01 delegado.** Comodines y `export_cert`.
-2. **§4 dominios propios.** Es lo que convierte el servicio en algo usable por
-   alguien con una marca.
-3. **§6.2 puertos dedicados.** Recién cuando aparezca un caso real que lo pida.
+1. **§4 dominios propios.** Es lo que convierte el servicio en algo usable por
+   alguien con una marca. Incluye llevar DNS-01 al lado del agente para quien
+   quiera wildcard sobre su propio dominio.
+2. **§6.1 puertos dedicados.** Recién cuando aparezca un caso real que lo pida.

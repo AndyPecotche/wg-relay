@@ -46,6 +46,7 @@ type config struct {
 	DataDir     string
 	CFToken     string
 	CFZoneID    string
+	CFBaseURL   string // solo para tests: apunta a un servidor que imite la API de Cloudflare
 }
 
 func loadConfig() config {
@@ -61,6 +62,7 @@ func loadConfig() config {
 		DataDir:     env("WGRELAY_DATA_DIR", "/data"),
 		CFToken:     env("CLOUDFLARE_API_TOKEN", ""),
 		CFZoneID:    env("CLOUDFLARE_ZONE_ID", ""),
+		CFBaseURL:   env("CLOUDFLARE_API_BASE_URL", ""),
 	}
 }
 
@@ -119,7 +121,13 @@ const usage = `uso:
   wgrelay-api dns sync`
 
 func serve(ctx context.Context, cfg config, st *store.Store, log *slog.Logger) error {
-	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log}).Handler()
+	var cf *cloudflare.Client
+	if cfg.CFToken != "" && cfg.CFZoneID != "" {
+		cf = cloudflare.NewWithBaseURL(cfg.CFToken, cfg.CFZoneID, cfg.CFBaseURL)
+	} else {
+		log.Warn("CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID no configurados: el endpoint de DNS-01 delegado (certificados wildcard) queda deshabilitado")
+	}
+	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log, Cloudflare: cf}).Handler()
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}}
 
 	if cfg.APIDomain != "" {
@@ -268,7 +276,7 @@ func ensureDNS(ctx context.Context, cfg config, domains []string) error {
 		}
 		return nil
 	}
-	cf := cloudflare.New(cfg.CFToken, cfg.CFZoneID)
+	cf := cloudflare.NewWithBaseURL(cfg.CFToken, cfg.CFZoneID, cfg.CFBaseURL)
 	for _, d := range domains {
 		for _, name := range []string{d, "*." + d} {
 			if err := cf.EnsureCNAME(ctx, name, cfg.EdgeHost); err != nil {

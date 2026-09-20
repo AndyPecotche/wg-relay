@@ -281,14 +281,25 @@ asignado por nosotros, tiene que ser el control plane (§6.2.1); para uno
 propio del cliente, tiene que ser el agente, hablando directo con el
 proveedor DNS del cliente (§6.5).
 
-### 6.2.1 Dominio asignado, DNS-01 delegado [F1b]
+### 6.2.1 Dominio asignado, DNS-01 delegado [F1b] ✅
 
 El agente no tiene ni puede tener acceso a la zona `clients.wg-relay...`: es
 nuestra. Por eso acá el DNS-01 lo resuelve **el control plane**, nunca el
 agente. El agente pide el certificado a Let's Encrypt y resuelve el challenge
-llamando a un endpoint de la API, que escribe el TXT en Cloudflare (solo
-dentro de la zona del tunnel autenticado) y lo borra al terminar. Soporta
-**wildcard** y es independiente del data plane.
+llamando a `POST /v1/agent/acme-dns` (que valida que el FQDN caiga dentro del
+dominio del tunnel autenticado, escribe el TXT en Cloudflare y lo borra al
+terminar) mediante un proveedor `libdns` propio (`internal/agent/dns01.go`).
+Soporta **wildcard** y es independiente del data plane.
+
+Rate limit de 10 ráfaga / ~30 por minuto por tunnel, en memoria del proceso
+(`internal/api/api.go`, `dnsLimiter`): no se comparte entre réplicas de la API
+ni se poda con el tiempo, aceptable con la cantidad de tunnels de hoy.
+
+`export_cert` reutiliza el mismo mecanismo con un `certmagic.Config` aparte,
+sin HTTP-01 ni TLS-ALPN-01 (`internal/agent/exportcert.go`): en `passthrough`
+el TLS viaja intacto hasta el backend del usuario, así que esos dos desafíos
+nunca llegarían al agente. Los archivos se escriben vía el hook `OnEvent` de
+certmagic, que dispara en cada obtención y en cada renovación.
 
 ### 6.3 Almacenamiento de certificados sin volumen
 
@@ -566,9 +577,9 @@ al plan pago.
 |---|---|---|
 | **F0** | DB, tokens, leases, túnel WG userspace, router SNI, passthrough, redirect :80, CLI de admin, DNS automático, e2e | ✅ |
 | **F1a** | Modo `terminate`: almacén cifrado de certs, TLS-ALPN-01, HTTP y TCP (`tcp://`) | ✅ |
-| **F1b** | ACME DNS-01 delegado (dominio asignado) y del lado del agente (dominio propio): certificados wildcard y `export_cert` | |
-| **F2** | Dominios propios con verificación DNS | |
-| **F3** | Métricas y cuotas de tráfico; rate limiting de la API | |
+| **F1b** | ACME DNS-01 delegado (dominio asignado): certificados wildcard y `export_cert` | ✅ |
+| **F2** | Dominios propios: verificación DNS y DNS-01 del lado del agente (token, CNAME delegado o manual) | |
+| **F3** | Métricas y cuotas de tráfico; rate limiting general de la API | |
 | — | Puertos TCP dedicados, UDP, autoservicio de registro (§16), PSL | Futuro |
 
 ---
@@ -589,6 +600,7 @@ al plan pago.
 | 10 | v1 solo SNI en :443 | TCP/UDP desde el inicio | 90% de los casos con una fracción del trabajo |
 | 11 | "Efímero" = sesión, no nombre | Subdominio aleatorio por sesión | Cuota de Let's Encrypt |
 | 12 | Un token = un servidor | Varios agentes activos por token | Unidad de aislamiento y cuota |
+| 13 | Un `certmagic.Config`/emisor ACME por tipo de desafío | Un solo emisor con todos los solvers juntos | acmez puede preferir dns-01 sobre TLS-ALPN-01 aunque no haga falta, acoplando certificados simples a Cloudflare |
 
 ---
 
@@ -597,8 +609,10 @@ al plan pago.
 - **Public Suffix List y dominio dedicado** — diferido (§4.3, §6.4).
 - **Abuso** — sin política. Antes de abrir a terceros: rate limits, detección
   de phishing, canal de denuncias.
-- **Rate limiting de la API** — no implementado. Hoy el acceso requiere un
-  token emitido a mano.
+- **Rate limiting general de la API** — solo existe para el endpoint de
+  DNS-01 (§6.2.1). El resto (`register`, `heartbeat`, intentos de token
+  inválido) no tiene límite. Hoy el acceso requiere un token emitido a mano,
+  lo que acota bastante el riesgo.
 - **Punto único de la API** — la API y Postgres viven en una VM. Los túneles
   existentes sobreviven a su caída, pero hace falta backup de Postgres.
 - **Límite de registros de Cloudflare** — dos por tunnel; verificar el tope

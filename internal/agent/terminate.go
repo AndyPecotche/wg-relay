@@ -3,14 +3,12 @@ package agent
 import (
 	"context"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -21,7 +19,9 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/AndyPecotche/wg-relay/internal/apiclient"
 	"github.com/AndyPecotche/wg-relay/internal/pipe"
+	"github.com/AndyPecotche/wg-relay/internal/sni"
 )
 
 // terminator atiende las rutas en modo terminate: obtiene los certificados,
@@ -31,26 +31,24 @@ import (
 // participe: el challenge entra por el :443 del nodo con el SNI del cliente y
 // se rutea hasta acá como cualquier otra conexión.
 type terminator struct {
-	cache      *certmagic.Cache
-	cfg        *certmagic.Config
-	tlsCfg     *tls.Config
-	srv        *http.Server
-	ln         *chanListener
-	proxies    map[string]*httputil.ReverseProxy // rutas http(s)://
-	tcpTargets map[string]string                 // rutas tcp://: host -> destino
-	log        *slog.Logger
+	cache         *certmagic.Cache
+	wildcardCache *certmagic.Cache // nil si no hay comodines en terminate
+	cfg           *certmagic.Config
+	tlsCfg        *tls.Config
+	srv           *http.Server
+	ln            *chanListener
+	proxies       map[string]*httputil.ReverseProxy // rutas http(s)://
+	tcpTargets    map[string]string                 // rutas tcp://: host -> destino
+	log           *slog.Logger
 }
 
-func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagic.Storage, acme ACME, log *slog.Logger) (*terminator, error) {
+func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagic.Storage, api *apiclient.Client, acme ACME, log *slog.Logger) (*terminator, error) {
 	hosts := make([]string, 0, len(routes))
 	proxies := make(map[string]*httputil.ReverseProxy, len(routes))
 	tcpTargets := make(map[string]string, len(routes))
 	for host, r := range routes {
 		if r.Mode != ModeTerminate {
 			continue
-		}
-		if strings.HasPrefix(host, "*.") {
-			return nil, fmt.Errorf("ruta %q: un comodín en modo terminate necesita un certificado wildcard, que todavía no está implementado; usá mode: passthrough o declará los subdominios uno por uno", host)
 		}
 		target, err := url.Parse(r.To)
 		if err != nil {
@@ -77,16 +75,24 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 	}
 	sort.Strings(hosts)
 
-	var roots *x509.CertPool
-	if acme.TrustedRoots != "" {
-		pem, err := os.ReadFile(acme.TrustedRoots)
-		if err != nil {
-			return nil, fmt.Errorf("acme.trusted_roots: %w", err)
+	// Separados en dos emisores ACME, no uno: si el mismo emisor tuviera
+	// configurados DNS01Solver y TLS-ALPN a la vez, acmez puede preferir
+	// dns-01 incluso para hosts concretos que no lo necesitan, y entonces
+	// certificados que hoy funcionan sin Cloudflare pasarían a depender de
+	// él. Solo los comodines (que ACME exige resolver por DNS-01) usan el
+	// emisor con DNS01Solver; el resto sigue en TLS-ALPN-01 puro.
+	var normalHosts, wildcardHosts []string
+	for _, h := range hosts {
+		if strings.HasPrefix(h, "*.") {
+			wildcardHosts = append(wildcardHosts, h)
+		} else {
+			normalHosts = append(normalHosts, h)
 		}
-		roots = x509.NewCertPool()
-		if !roots.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("acme.trusted_roots: %s no contiene certificados", acme.TrustedRoots)
-		}
+	}
+
+	roots, err := loadTrustedRoots(acme.TrustedRoots)
+	if err != nil {
+		return nil, err
 	}
 	zl := zap.New(&slogCore{log: log.With("component", "acme")})
 	cache := certmagic.NewCache(certmagic.CacheOptions{
@@ -105,10 +111,48 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 		TrustedRoots:         roots,
 		Logger:               zl,
 	})}
-
 	tlsCfg := cfg.TLSConfig()
 	tlsCfg.NextProtos = append([]string{"h2", "http/1.1"}, tlsCfg.NextProtos...)
+
 	t := &terminator{cache: cache, cfg: cfg, tlsCfg: tlsCfg, proxies: proxies, tcpTargets: tcpTargets, log: log}
+
+	var wildcardCfg *certmagic.Config
+	if len(wildcardHosts) > 0 {
+		wzl := zap.New(&slogCore{log: log.With("component", "acme-wildcard")})
+		t.wildcardCache = certmagic.NewCache(certmagic.CacheOptions{
+			GetConfigForCert: func(certmagic.Certificate) (*certmagic.Config, error) {
+				return certmagic.New(nil, certmagic.Config{Storage: st, Logger: wzl}), nil
+			},
+			Logger: wzl,
+		})
+		wildcardCfg = certmagic.New(t.wildcardCache, certmagic.Config{Storage: st, Logger: wzl})
+		wildcardCfg.Issuers = []certmagic.Issuer{certmagic.NewACMEIssuer(wildcardCfg, certmagic.ACMEIssuer{
+			CA:     acme.CAOrDefault(),
+			Email:  acme.Email,
+			Agreed: true,
+			// DNS-01 es el único desafío que ACME acepta para un comodín;
+			// deshabilitar los otros dos evita cualquier ambigüedad.
+			DisableHTTPChallenge:    true,
+			DisableTLSALPNChallenge: true,
+			TrustedRoots:            roots,
+			Logger:                  wzl,
+			DNS01Solver: &certmagic.DNS01Solver{DNSManager: certmagic.DNSManager{
+				DNSProvider: newDNS01Provider(api),
+				Resolvers:   acme.DNSResolvers,
+				Logger:      wzl,
+			}},
+		})}
+		// El http.Server solo tiene UN tls.Config: se combinan las dos
+		// búsquedas de certificado, probando primero la de hosts concretos.
+		getCert, wildcardGetCert := tlsCfg.GetCertificate, wildcardCfg.TLSConfig().GetCertificate
+		tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if cert, err := getCert(hello); err == nil {
+				return cert, nil
+			}
+			return wildcardGetCert(hello)
+		}
+	}
+
 	t.ln = newChanListener()
 	t.srv = &http.Server{
 		Handler:   http.HandlerFunc(t.serveHTTP),
@@ -117,8 +161,13 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 	}
 	// ManageAsync no bloquea el arranque: si ACME falla, el agente igual queda
 	// operativo para el resto de las rutas y reintenta solo.
-	if err := cfg.ManageAsync(ctx, hosts); err != nil {
+	if err := cfg.ManageAsync(ctx, normalHosts); err != nil {
 		return nil, err
+	}
+	if wildcardCfg != nil {
+		if err := wildcardCfg.ManageAsync(ctx, wildcardHosts); err != nil {
+			return nil, err
+		}
 	}
 	go t.srv.ServeTLS(t.ln, "", "")
 	if len(proxies) > 0 {
@@ -144,7 +193,9 @@ func (t *terminator) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	proxy, ok := t.proxies[host]
+	// Match exacto primero y después comodín, igual que el resto del agente:
+	// así una ruta "*" con certificado wildcard cubre cualquier subdominio.
+	proxy, ok := sni.Match(t.proxies, host)
 	if !ok {
 		http.Error(w, "hostname no configurado en wgrelay.yml", http.StatusMisdirectedRequest)
 		return
@@ -155,7 +206,7 @@ func (t *terminator) serveHTTP(w http.ResponseWriter, r *http.Request) {
 // handle despacha una conexión ya aceptada: al servidor HTTPS interno si el
 // host está en modo terminate http(s), o directo al backend TCP si es tcp://.
 func (t *terminator) handle(conn net.Conn, host string) {
-	if target, ok := t.tcpTargets[host]; ok {
+	if target, ok := sni.Match(t.tcpTargets, host); ok {
 		t.handleTCP(conn, target)
 		return
 	}
@@ -193,6 +244,9 @@ func (t *terminator) close() {
 	t.ln.Close()
 	t.srv.Close()
 	t.cache.Stop()
+	if t.wildcardCache != nil {
+		t.wildcardCache.Stop()
+	}
 }
 
 // ------------------------------------------------- listener alimentado a mano
