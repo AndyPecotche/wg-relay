@@ -11,9 +11,13 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/AndyPecotche/wg-relay/internal/dnsprovider"
 )
 
 const defaultAPIBase = "https://api.cloudflare.com/client/v4"
+
+var _ dnsprovider.Provider = (*Client)(nil)
 
 type Client struct {
 	token   string

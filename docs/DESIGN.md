@@ -57,7 +57,7 @@ privilegios, ni estado local.
                      │  · Auth por token                     │
                      │  · IPAM: IP de VPN + subdominio       │
                      │  · Leases de agentes                  │
-                     │  · DNS (Cloudflare)                   │
+                     │  · DNS (proveedor configurable)       │
                      │  · ACME DNS-01 delegado        [F1b]  │
                      │  · Almacén cifrado de certs           │
                      │  · Estado → PostgreSQL                │
@@ -158,7 +158,9 @@ puede tener túnel con todos los nodos a la vez: cada nodo es un peer con
 | `*.<sub>.clients.wg-relay.andy.net.ar` | CNAME → edge | API, al crear el tunnel |
 | `_acme-challenge.<sub>.clients...` | TXT, efímero | API, durante ACME [F1b] |
 
-Todos sin proxy de Cloudflare (nube gris). Los dominios son configurables
+Todos sin proxy (con Cloudflare, nube gris; cualquier otro proveedor con un
+CDN/proxy propio debe desactivarlo igual, o terminaría el TLS antes de
+llegar al nodo). Los dominios son configurables
 (`WGRELAY_BASE_DOMAIN`, `WGRELAY_EDGE_HOST`, `WGRELAY_API_DOMAIN`); no hay
 ninguno fijo en el código.
 
@@ -172,13 +174,32 @@ propios de clientes [F2] apuntan al mismo edge.
 > subárbol**: el cliente sacaría su certificado y en ese instante su dominio
 > dejaría de resolver. Por eso los registros por tunnel son explícitos.
 
-### 4.3 Alcance del token de Cloudflare
+### 4.3 Proveedor de DNS del operador
 
-La idea original era delegar `clients.wg-relay.andy.net.ar` como zona propia
-con un token limitado a ella. **No es posible en el plan gratuito:** Cloudflare
-solo admite zonas de subdominio en el plan Enterprise, y sus tokens no se
-pueden limitar a una parte de una zona. Hoy el token puede editar toda
-`andy.net.ar`; el código solo escribe bajo el dominio base.
+El control plane necesita gestionar DNS por cuenta propia: el CNAME por
+tunnel (arriba) y el TXT del DNS-01 delegado (§6.2.1). Quién despliega
+wg-relay para sí mismo elige su proveedor; no hace falta que sea Cloudflare.
+La abstracción es `internal/dnsprovider.Provider` (`EnsureCNAME`, `CreateTXT`,
+`DeleteRecord`), seleccionada por `WGRELAY_DNS_PROVIDER`:
+
+| Valor | Qué usa | Credenciales |
+|---|---|---|
+| `cloudflare` (default si hay token) | `internal/cloudflare`, cliente propio sin dependencias extra | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ZONE_ID` |
+| `webhook` | `dnsprovider.Webhook`: llama a un servicio HTTP propio del operador (`POST /cname`, `POST /txt`, `DELETE /txt/{id}`) | `WGRELAY_DNS_WEBHOOK_URL`, `WGRELAY_DNS_WEBHOOK_TOKEN` |
+| *(vacío)* | Ninguno: `dns sync` imprime los registros para cargarlos a mano, y el endpoint de DNS-01 delegado responde 501 | — |
+
+`webhook` es el camino para cualquier proveedor que no sea Cloudflare
+(Route53, DigitalOcean, OVH, un DNS propio, ...): en vez de vendorizar el SDK
+de cada nube en el binario de wg-relay (decisión #14, §14), el operador
+escribe un puente propio, del tamaño que necesite, contra el DNS que
+realmente use.
+
+**Alcance del token de Cloudflare.** La idea original era delegar
+`clients.wg-relay.andy.net.ar` como zona propia con un token limitado a ella.
+**No es posible en el plan gratuito:** Cloudflare solo admite zonas de
+subdominio en el plan Enterprise, y sus tokens no se pueden limitar a una
+parte de una zona. Hoy el token puede editar toda `andy.net.ar`; el código
+solo escribe bajo el dominio base.
 
 Antes de abrir el servicio a terceros: **mover los clientes a un dominio
 dedicado** (una zona propia, con su propio token). Es un cambio de variables
@@ -287,8 +308,9 @@ El agente no tiene ni puede tener acceso a la zona `clients.wg-relay...`: es
 nuestra. Por eso acá el DNS-01 lo resuelve **el control plane**, nunca el
 agente. El agente pide el certificado a Let's Encrypt y resuelve el challenge
 llamando a `POST /v1/agent/acme-dns` (que valida que el FQDN caiga dentro del
-dominio del tunnel autenticado, escribe el TXT en Cloudflare y lo borra al
-terminar) mediante un proveedor `libdns` propio (`internal/agent/dns01.go`).
+dominio del tunnel autenticado, escribe el TXT en el proveedor DNS
+configurado —§4.3— y lo borra al terminar) mediante un proveedor `libdns`
+propio (`internal/agent/dns01.go`).
 Soporta **wildcard** y es independiente del data plane.
 
 Rate limit de 10 ráfaga / ~30 por minuto por tunnel, en memoria del proceso
@@ -439,7 +461,7 @@ reinicios sin guardar nada en disco, y el control plane no puede calcularla.
 | Componente | Puertos públicos | Secretos que tiene |
 |---|---|---|
 | Nodo | 443/tcp, 80/tcp, 51820/udp | Su propio token |
-| API | Ninguno (entra por el nodo) | Token de Cloudflare, hashes de tokens |
+| API | Ninguno (entra por el nodo) | Credencial del proveedor DNS (§4.3), hashes de tokens |
 | Postgres | Ninguno | — |
 | Agente | Ninguno | Su token |
 
@@ -600,7 +622,8 @@ al plan pago.
 | 10 | v1 solo SNI en :443 | TCP/UDP desde el inicio | 90% de los casos con una fracción del trabajo |
 | 11 | "Efímero" = sesión, no nombre | Subdominio aleatorio por sesión | Cuota de Let's Encrypt |
 | 12 | Un token = un servidor | Varios agentes activos por token | Unidad de aislamiento y cuota |
-| 13 | Un `certmagic.Config`/emisor ACME por tipo de desafío | Un solo emisor con todos los solvers juntos | acmez puede preferir dns-01 sobre TLS-ALPN-01 aunque no haga falta, acoplando certificados simples a Cloudflare |
+| 13 | Un `certmagic.Config`/emisor ACME por tipo de desafío | Un solo emisor con todos los solvers juntos | acmez puede preferir dns-01 sobre TLS-ALPN-01 aunque no haga falta, acoplando certificados simples al proveedor DNS |
+| 14 | Interfaz `dnsprovider.Provider` propia + webhook para "cualquier otro" | Vendorizar un SDK por proveedor (Route53, DigitalOcean, ...) | Cada SDK de nube trae su propio árbol de dependencias (el de AWS por sí solo son ~15 módulos) en el binario de *todos*, lo usen o no; el webhook delega ese costo a quien realmente lo necesita |
 
 ---
 
@@ -615,5 +638,5 @@ al plan pago.
   lo que acota bastante el riesgo.
 - **Punto único de la API** — la API y Postgres viven en una VM. Los túneles
   existentes sobreviven a su caída, pero hace falta backup de Postgres.
-- **Límite de registros de Cloudflare** — dos por tunnel; verificar el tope
-  del plan antes de crecer.
+- **Límite de registros del proveedor DNS** — con Cloudflare, dos por tunnel;
+  verificar el tope del plan (o del proveedor que se use) antes de crecer.

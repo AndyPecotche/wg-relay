@@ -31,6 +31,7 @@ import (
 	"github.com/AndyPecotche/wg-relay/internal/api"
 	"github.com/AndyPecotche/wg-relay/internal/buildinfo"
 	"github.com/AndyPecotche/wg-relay/internal/cloudflare"
+	"github.com/AndyPecotche/wg-relay/internal/dnsprovider"
 	"github.com/AndyPecotche/wg-relay/internal/store"
 )
 
@@ -44,9 +45,16 @@ type config struct {
 	ACMEEmail   string
 	ACMECA      string
 	DataDir     string
-	CFToken     string
-	CFZoneID    string
-	CFBaseURL   string // solo para tests: apunta a un servidor que imite la API de Cloudflare
+
+	// Proveedor de DNS que usa el control plane para su propia zona: el
+	// CNAME por tunnel y el TXT del DNS-01 delegado (DESIGN.md §4.3, §6.2.1).
+	// No confundir con el DNS de un dominio propio del cliente (§6.5, F2).
+	DNSProviderName string // "cloudflare" | "webhook" | "" (ninguno: alta manual)
+	CFToken         string
+	CFZoneID        string
+	CFBaseURL       string // solo para tests: apunta a un servidor que imite la API de Cloudflare
+	DNSWebhookURL   string
+	DNSWebhookToken string
 }
 
 func loadConfig() config {
@@ -60,9 +68,40 @@ func loadConfig() config {
 		ACMEEmail:   env("WGRELAY_ACME_EMAIL", ""),
 		ACMECA:      env("WGRELAY_ACME_CA", ""),
 		DataDir:     env("WGRELAY_DATA_DIR", "/data"),
-		CFToken:     env("CLOUDFLARE_API_TOKEN", ""),
-		CFZoneID:    env("CLOUDFLARE_ZONE_ID", ""),
-		CFBaseURL:   env("CLOUDFLARE_API_BASE_URL", ""),
+
+		DNSProviderName: env("WGRELAY_DNS_PROVIDER", ""),
+		CFToken:         env("CLOUDFLARE_API_TOKEN", ""),
+		CFZoneID:        env("CLOUDFLARE_ZONE_ID", ""),
+		CFBaseURL:       env("CLOUDFLARE_API_BASE_URL", ""),
+		DNSWebhookURL:   env("WGRELAY_DNS_WEBHOOK_URL", ""),
+		DNSWebhookToken: env("WGRELAY_DNS_WEBHOOK_TOKEN", ""),
+	}
+}
+
+// newDNSProvider elige la implementación según WGRELAY_DNS_PROVIDER. Vacío
+// con CLOUDFLARE_API_TOKEN/ZONE_ID configurados se sigue leyendo como
+// "cloudflare", por compatibilidad con despliegues que ya usaban esas
+// variables antes de que existiera esta. nil significa "sin proveedor": el
+// endpoint de DNS-01 delegado queda deshabilitado y `dns sync` imprime los
+// registros para cargarlos a mano.
+func newDNSProvider(cfg config) dnsprovider.Provider {
+	name := cfg.DNSProviderName
+	if name == "" && cfg.CFToken != "" && cfg.CFZoneID != "" {
+		name = "cloudflare"
+	}
+	switch name {
+	case "cloudflare":
+		if cfg.CFToken == "" || cfg.CFZoneID == "" {
+			return nil
+		}
+		return cloudflare.NewWithBaseURL(cfg.CFToken, cfg.CFZoneID, cfg.CFBaseURL)
+	case "webhook":
+		if cfg.DNSWebhookURL == "" {
+			return nil
+		}
+		return dnsprovider.NewWebhook(cfg.DNSWebhookURL, cfg.DNSWebhookToken)
+	default:
+		return nil
 	}
 }
 
@@ -121,13 +160,11 @@ const usage = `uso:
   wgrelay-api dns sync`
 
 func serve(ctx context.Context, cfg config, st *store.Store, log *slog.Logger) error {
-	var cf *cloudflare.Client
-	if cfg.CFToken != "" && cfg.CFZoneID != "" {
-		cf = cloudflare.NewWithBaseURL(cfg.CFToken, cfg.CFZoneID, cfg.CFBaseURL)
-	} else {
-		log.Warn("CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID no configurados: el endpoint de DNS-01 delegado (certificados wildcard) queda deshabilitado")
+	dp := newDNSProvider(cfg)
+	if dp == nil {
+		log.Warn("ningún proveedor de DNS configurado (WGRELAY_DNS_PROVIDER, o CLOUDFLARE_API_TOKEN/CLOUDFLARE_ZONE_ID): el endpoint de DNS-01 delegado (certificados wildcard) queda deshabilitado")
 	}
-	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log, Cloudflare: cf}).Handler()
+	h := (&api.Server{Store: st, BaseDomain: cfg.BaseDomain, Log: log, DNSProvider: dp}).Handler()
 	servers := []*http.Server{{Addr: cfg.Listen, Handler: h, ReadHeaderTimeout: 10 * time.Second}}
 
 	if cfg.APIDomain != "" {
@@ -269,17 +306,17 @@ func dnsSync(ctx context.Context, cfg config, st *store.Store) error {
 // son explícitos por tunnel (no un comodín global) por RFC 4592: el TXT de
 // ACME bajo el dominio del cliente anularía un comodín superior.
 func ensureDNS(ctx context.Context, cfg config, domains []string) error {
-	if cfg.CFToken == "" || cfg.CFZoneID == "" || cfg.EdgeHost == "" {
-		fmt.Println("Cloudflare no configurado: creá estos registros DNS a mano (sin proxy, nube gris):")
+	dp := newDNSProvider(cfg)
+	if dp == nil || cfg.EdgeHost == "" {
+		fmt.Println("Proveedor de DNS no configurado: creá estos registros a mano (sin proxy, nube gris):")
 		for _, d := range domains {
 			fmt.Printf("  %-50s CNAME  %s\n  %-50s CNAME  %s\n", d, cfg.EdgeHost, "*."+d, cfg.EdgeHost)
 		}
 		return nil
 	}
-	cf := cloudflare.NewWithBaseURL(cfg.CFToken, cfg.CFZoneID, cfg.CFBaseURL)
 	for _, d := range domains {
 		for _, name := range []string{d, "*." + d} {
-			if err := cf.EnsureCNAME(ctx, name, cfg.EdgeHost); err != nil {
+			if err := dp.EnsureCNAME(ctx, name, cfg.EdgeHost); err != nil {
 				return fmt.Errorf("DNS %s: %w", name, err)
 			}
 			fmt.Printf("DNS ok: %s → %s\n", name, cfg.EdgeHost)

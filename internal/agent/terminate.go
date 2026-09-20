@@ -78,9 +78,10 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 	// Separados en dos emisores ACME, no uno: si el mismo emisor tuviera
 	// configurados DNS01Solver y TLS-ALPN a la vez, acmez puede preferir
 	// dns-01 incluso para hosts concretos que no lo necesitan, y entonces
-	// certificados que hoy funcionan sin Cloudflare pasarían a depender de
-	// él. Solo los comodines (que ACME exige resolver por DNS-01) usan el
-	// emisor con DNS01Solver; el resto sigue en TLS-ALPN-01 puro.
+	// certificados que hoy funcionan sin ningún proveedor DNS pasarían a
+	// depender de uno. Solo los comodines (que ACME exige resolver por
+	// DNS-01) usan el emisor con DNS01Solver; el resto sigue en TLS-ALPN-01
+	// puro.
 	var normalHosts, wildcardHosts []string
 	for _, h := range hosts {
 		if strings.HasPrefix(h, "*.") {

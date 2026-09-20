@@ -19,8 +19,9 @@ import (
 // automáticamente cuando el certificado pedido es "*.<dominio>", que es el
 // único caso en el que Let's Encrypt exige DNS-01.
 //
-// El agente nunca ve el token de Cloudflare: el control plane es quien
-// escribe el TXT, y solo dentro de la zona del tunnel autenticado.
+// El agente nunca ve la credencial del proveedor DNS del control plane: el
+// control plane es quien escribe el TXT, y solo dentro de la zona del tunnel
+// autenticado.
 type dns01Provider struct {
 	api *apiclient.Client
 

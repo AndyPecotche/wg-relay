@@ -16,7 +16,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/AndyPecotche/wg-relay/internal/auth"
-	"github.com/AndyPecotche/wg-relay/internal/cloudflare"
+	"github.com/AndyPecotche/wg-relay/internal/dnsprovider"
 	"github.com/AndyPecotche/wg-relay/internal/proto"
 	"github.com/AndyPecotche/wg-relay/internal/store"
 	"github.com/AndyPecotche/wg-relay/internal/wgnet"
@@ -34,9 +34,11 @@ type Server struct {
 	Store      *store.Store
 	BaseDomain string
 	Log        *slog.Logger
-	// Cloudflare habilita el endpoint de DNS-01 delegado (F1b). Si es nil,
+	// DNSProvider habilita el endpoint de DNS-01 delegado (F1b). Si es nil,
 	// ese endpoint responde 501: el resto del servicio funciona igual.
-	Cloudflare *cloudflare.Client
+	// Cloudflare (internal/cloudflare) es la implementación por defecto;
+	// dnsprovider.Webhook cubre cualquier otro proveedor (DESIGN.md §4.3).
+	DNSProvider dnsprovider.Provider
 
 	dnsLimitersMu sync.Mutex
 	dnsLimiters   map[int64]*rate.Limiter // por tunnel_id
@@ -230,12 +232,12 @@ func (s *Server) storageList(w http.ResponseWriter, r *http.Request, t store.Tun
 // ------------------------------------------------- ACME DNS-01 delegado (F1b)
 //
 // Habilita certificados wildcard sobre el dominio asignado: el agente pide
-// que se escriba el TXT del desafío, nosotros lo hacemos en Cloudflare
-// (nunca el agente, que no tiene ni debe tener ese token) y solo dentro de
-// la zona del tunnel autenticado. Ver DESIGN.md §6.2.1.
+// que se escriba el TXT del desafío, nosotros lo hacemos en el proveedor DNS
+// configurado (nunca el agente, que no tiene ni debe tener esa credencial) y
+// solo dentro de la zona del tunnel autenticado. Ver DESIGN.md §6.2.1 y §4.3.
 
 func (s *Server) acmeDNSCreate(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
-	if s.Cloudflare == nil {
+	if s.DNSProvider == nil {
 		writeErr(w, http.StatusNotImplemented, proto.ErrInternal, "el servidor no tiene un proveedor DNS configurado")
 		return
 	}
@@ -256,13 +258,13 @@ func (s *Server) acmeDNSCreate(w http.ResponseWriter, r *http.Request, t store.T
 		writeErr(w, http.StatusBadRequest, proto.ErrBadRequest, "value inválido")
 		return
 	}
-	cfID, err := s.Cloudflare.CreateTXT(r.Context(), fqdn, req.Value)
+	recordID, err := s.DNSProvider.CreateTXT(r.Context(), fqdn, req.Value)
 	if err != nil {
-		s.Log.Error("cloudflare: creando TXT", "fqdn", fqdn, "err", err)
+		s.Log.Error("dns provider: creando TXT", "fqdn", fqdn, "err", err)
 		writeErr(w, http.StatusBadGateway, proto.ErrInternal, "no se pudo crear el registro DNS")
 		return
 	}
-	id, err := s.Store.CreateDNSChallenge(r.Context(), t.ID, fqdn, cfID)
+	id, err := s.Store.CreateDNSChallenge(r.Context(), t.ID, fqdn, recordID)
 	if err != nil {
 		s.fail(w, err)
 		return
@@ -272,12 +274,12 @@ func (s *Server) acmeDNSCreate(w http.ResponseWriter, r *http.Request, t store.T
 }
 
 func (s *Server) acmeDNSDelete(w http.ResponseWriter, r *http.Request, t store.Tunnel) {
-	if s.Cloudflare == nil {
+	if s.DNSProvider == nil {
 		writeErr(w, http.StatusNotImplemented, proto.ErrInternal, "el servidor no tiene un proveedor DNS configurado")
 		return
 	}
 	id := r.PathValue("id")
-	cfID, err := s.Store.DNSChallengeRecordID(r.Context(), t.ID, id)
+	recordID, err := s.Store.DNSChallengeRecordID(r.Context(), t.ID, id)
 	if errors.Is(err, store.ErrNotFound) {
 		w.WriteHeader(http.StatusNoContent) // ya no existe: el estado deseado ya está logrado
 		return
@@ -286,10 +288,10 @@ func (s *Server) acmeDNSDelete(w http.ResponseWriter, r *http.Request, t store.T
 		s.fail(w, err)
 		return
 	}
-	if err := s.Cloudflare.DeleteRecord(r.Context(), cfID); err != nil {
+	if err := s.DNSProvider.DeleteRecord(r.Context(), recordID); err != nil {
 		// No abortamos: preferible un TXT huérfano (TTL 60s) a dejar al
 		// agente sin poder terminar de limpiar su propio estado.
-		s.Log.Warn("cloudflare: borrando TXT", "id", id, "err", err)
+		s.Log.Warn("dns provider: borrando TXT", "id", id, "err", err)
 	}
 	if err := s.Store.DeleteDNSChallenge(r.Context(), t.ID, id); err != nil && !errors.Is(err, store.ErrNotFound) {
 		s.fail(w, err)
@@ -311,7 +313,7 @@ func validACMEDNSName(fqdn, tunnelDomain string) bool {
 }
 
 // dnsLimiter da un limitador por tunnel: sin él, un agente en bucle de
-// reintentos podría agotar la cuota de la API de Cloudflare para todos.
+// reintentos podría agotar la cuota de la API del proveedor DNS para todos.
 //
 // El mapa vive en memoria del proceso: no se comparte entre réplicas de la
 // API ni se poda con el tiempo. Aceptable con la cantidad de tunnels de hoy;
