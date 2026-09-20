@@ -14,6 +14,10 @@ routes:
   - host: "*.dev"
     mode: passthrough
     to: backend:8883
-  # terminate: el agente saca el certificado y proxea HTTP al servicio.
+  # terminate http (default): el agente saca el certificado y proxea HTTP.
   - host: web
     to: http://webbackend:80
+  # terminate tcp://: el agente termina TLS y entrega bytes crudos al
+  # backend, que habla MQTT plano y no sabe que existe TLS.
+  - host: mqttterm
+    to: tcp://mosquitto:1883

@@ -224,11 +224,12 @@ sola ruta `*` cubre todos los subdominios del cliente sin enumerarlos:
 Ver [CASOS-DE-USO.md](CASOS-DE-USO.md) para qué modo conviene en cada
 situación y qué falta cubrir.
 
-| Modo | Qué hace el agente | Estado |
-|---|---|---|
-| `passthrough` | Conecta al `to:` y reenvía el TLS intacto. El servicio termina TLS | ✅ F0 |
-| `terminate` (default) | Termina TLS con su certificado y reenvía HTTP al `to:` | ✅ F1a |
-| `tcp` | Puerto dedicado en el nodo, sin TLS | Futuro |
+| Modo | `to:` | Qué hace el agente | Estado |
+|---|---|---|---|
+| `passthrough` | cualquiera | Conecta al `to:` y reenvía el TLS intacto. El servicio termina TLS | ✅ F0 |
+| `terminate` (default) | `http://` o `https://` | Termina TLS con su certificado y proxea HTTP al `to:` | ✅ F1a |
+| `terminate` (default) | `tcp://` | Termina TLS con su certificado y entrega bytes crudos al `to:` | ✅ F1a |
+| `tcp` (ruta aparte) | — | Puerto dedicado en el nodo, sin TLS | Futuro |
 
 Hostname sin ruta → se cierra.
 
@@ -259,24 +260,35 @@ tocar el TLS. No depende de Cloudflare.
 
 ### 6.2 Cómo obtiene el agente sus certificados
 
-En modo `terminate` alcanza con **TLS-ALPN-01**: el challenge llega al `:443`
-del nodo con el SNI del cliente, se rutea al agente como cualquier otra
-conexión y el agente lo responde. El control plane no participa. Es lo mismo
-que hace Caddy cuando se lo usa como terminador (ver
-`deploy/client/examples/caddy/`).
+Por defecto, en modo `terminate`, alcanza con **TLS-ALPN-01**: el challenge
+llega al `:443` del nodo con el SNI del cliente, se rutea al agente como
+cualquier otra conexión y el agente lo responde. El control plane no
+participa, no hay que tocar ningún DNS, y no se gasta ninguna llamada a la API
+de un proveedor en cada renovación. Es lo mismo que hace Caddy cuando se lo
+usa como terminador (ver `deploy/client/examples/caddy/`).
 
-DNS-01 delegado hace falta solo en dos casos:
+DNS-01 no reemplaza esto: resuelve dos casos que TLS-ALPN-01 **no puede**
+resolver por diseño de ACME, no por una limitación nuestra.
 
 1. **Certificados wildcard**, que ACME nunca emite por HTTP-01 ni TLS-ALPN-01.
 2. **Hostnames en modo `passthrough`**, donde el challenge no llega al agente
    porque la conexión va derecho al servicio del usuario.
 
+Fuera de esos dos casos, TLS-ALPN-01 sigue siendo el camino por defecto.
+
+Quién resuelve el DNS-01 depende de **de quién es el dominio**: para el
+asignado por nosotros, tiene que ser el control plane (§6.2.1); para uno
+propio del cliente, tiene que ser el agente, hablando directo con el
+proveedor DNS del cliente (§6.5).
+
 ### 6.2.1 Dominio asignado, DNS-01 delegado [F1b]
 
-El agente pide el certificado a Let's Encrypt y resuelve DNS-01 llamando a la
-API, que escribe el TXT en Cloudflare (solo dentro de la zona del tunnel
-autenticado) y lo borra al terminar. Soporta **wildcard** y es independiente
-del data plane.
+El agente no tiene ni puede tener acceso a la zona `clients.wg-relay...`: es
+nuestra. Por eso acá el DNS-01 lo resuelve **el control plane**, nunca el
+agente. El agente pide el certificado a Let's Encrypt y resuelve el challenge
+llamando a un endpoint de la API, que escribe el TXT en Cloudflare (solo
+dentro de la zona del tunnel autenticado) y lo borra al terminar. Soporta
+**wildcard** y es independiente del data plane.
 
 ### 6.3 Almacenamiento de certificados sin volumen
 
@@ -320,8 +332,42 @@ Diferido por decisión explícita; el trámite tarda semanas.
 
 ### 6.5 Dominio propio del cliente [F3]
 
-TLS-ALPN-01 a través del túnel, en modo terminate. Para wildcard o passthrough
-sobre dominio propio, el cliente aporta credenciales de su proveedor DNS.
+Para un hostname puntual en modo `terminate`, TLS-ALPN-01 a través del túnel
+alcanza igual que con el dominio asignado: cero configuración adicional.
+
+Para wildcard, o para un hostname en `passthrough`, hace falta DNS-01 — pero
+acá el DNS-01 **lo resuelve el agente, no nuestro servidor**, porque la zona
+es del cliente y nosotros no tenemos (ni queremos tener) acceso a ella. Tres
+variantes, de más a menos automatizada:
+
+| Variante | Qué le damos a quién | Esfuerzo recurrente |
+|---|---|---|
+| **Token del proveedor DNS al agente** | El cliente configura localmente en su `wgrelay.yml` un token de su propio proveedor (Cloudflare, Route53, DigitalOcean, ...). El token nunca sale de su servidor | Ninguno |
+| **CNAME delegado** (recomendada) | El cliente crea una sola vez `_acme-challenge.<dominio> CNAME algo.acme.wg-relay.andy.net.ar`. El control plane resuelve el DNS-01 en su propia zona, sin ninguna credencial del cliente | Ninguno, después del alta |
+| **Manual** | El cliente pega a mano el TXT que le imprime el agente, en su propio proveedor, cada vez | Cada renovación (~90 días) |
+
+La variante de **token** usa `lego`, que trae soporte para ~150 proveedores de
+DNS, así que no hace falta escribir código por cada uno:
+
+```yaml
+acme:
+  dns_provider: cloudflare        # o route53, digitalocean, ovh, ...
+  dns_credentials_file: /run/secrets/dns.env
+```
+
+La variante de **CNAME delegado** es la que usa
+[acme-dns](https://github.com/joohoi/acme-dns) y es práctica reconocida en la
+comunidad de Let's Encrypt justo por esto: convierte lo que sería un paso
+manual repetido cada renovación en un paso manual único. Cuando Let's Encrypt
+valida `_acme-challenge.<dominio> TXT`, el DNS sigue el CNAME y termina
+preguntando en una zona nuestra, que el control plane puede escribir en cada
+renovación sin que el cliente vuelva a intervenir ni nos dé ninguna
+credencial. Es la opción recomendada para quien quiere wildcard sin entregarle
+un token de su DNS a nadie.
+
+La variante **manual** es el piso: cero confianza requerida de ningún lado,
+pero exige atención humana cada ~90 días. Sirve como opción de último recurso
+para quien no quiera ni siquiera crear el CNAME de arriba.
 
 ---
 
@@ -519,8 +565,8 @@ al plan pago.
 | Fase | Entrega | Estado |
 |---|---|---|
 | **F0** | DB, tokens, leases, túnel WG userspace, router SNI, passthrough, redirect :80, CLI de admin, DNS automático, e2e | ✅ |
-| **F1a** | Modo `terminate`: almacén cifrado de certs + TLS-ALPN-01 a través del túnel | ✅ |
-| **F1b** | ACME DNS-01 delegado: certificados wildcard y `export_cert` para passthrough | |
+| **F1a** | Modo `terminate`: almacén cifrado de certs, TLS-ALPN-01, HTTP y TCP (`tcp://`) | ✅ |
+| **F1b** | ACME DNS-01 delegado (dominio asignado) y del lado del agente (dominio propio): certificados wildcard y `export_cert` | |
 | **F2** | Migrar SensorHub | |
 | **F3** | Dominios propios con verificación DNS | |
 | **F4** | Métricas y cuotas de tráfico; rate limiting de la API | |

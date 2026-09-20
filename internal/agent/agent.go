@@ -345,10 +345,11 @@ func (t *tunnel) handle(c net.Conn) {
 		return
 	}
 	if route.Mode == ModeTerminate {
-		// El TLS lo termina el agente: la conexión pasa al servidor HTTPS
-		// interno, con la IP real del visitante ya puesta.
+		// El TLS lo termina el agente, con la IP real del visitante ya
+		// puesta. handle decide por el host si es HTTP (proxy) o TCP (bytes
+		// crudos al backend, ver terminate.go).
 		log.Debug("conexión (terminate)", "host", host, "cliente", src, "to", route.To)
-		t.term.handle(addrConn{Conn: conn, remote: net.TCPAddrFromAddrPort(src)})
+		t.term.handle(addrConn{Conn: conn, remote: net.TCPAddrFromAddrPort(src)}, host)
 		return
 	}
 	up, err := net.DialTimeout("tcp", route.To, 5*time.Second)

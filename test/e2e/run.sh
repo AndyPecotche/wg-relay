@@ -21,6 +21,7 @@ export AGENT_TOKEN=$(echo "$out" | grep -o 'wgr_[a-z0-9_]*')
 DOMAIN=$(echo "$out" | awk '/dominio:/{print $2}')
 export NODE_TOKEN=$(dc exec -T api wgrelay-api node create --name node1 --endpoint node:51820 | grep -o 'wgn_[a-z0-9_]*')
 export TERMINATE_HOST="web.$DOMAIN"
+export TERMINATE_HOST_TCP="mqttterm.$DOMAIN"
 echo "tunnel: $DOMAIN"
 
 dc --profile relay up -d >/dev/null
@@ -73,12 +74,14 @@ probe_web | grep -q 'X-Forwarded-For' || fail "no se propagó la IP real del vis
 echo "   ok"
 
 echo "6. el certificado sobrevive al reinicio del agente (almacén cifrado)"
-issued=$(dc logs agent | grep -c 'certificate obtained successfully' || true)
-[ "$issued" = "1" ] || fail "se esperaba una única emisión, hubo $issued"
+# El agente tiene dos hosts en terminate (web y mqttterm): contamos por host,
+# no en total, para no confundir "dos hosts" con "reemisión".
+issued_web=$(dc logs agent | grep -c "certificate obtained successfully.*$TERMINATE_HOST\b" || true)
+[ "$issued_web" = "1" ] || fail "se esperaba una única emisión para $TERMINATE_HOST, hubo $issued_web"
 dc restart agent >/dev/null
 wait_web || fail "el agente no volvió a servir después del reinicio"
-issued=$(dc logs agent | grep -c 'certificate obtained successfully' || true)
-[ "$issued" = "1" ] || fail "reemitió el certificado en vez de cargarlo del almacén ($issued)"
+issued_web=$(dc logs agent | grep -c "certificate obtained successfully.*$TERMINATE_HOST\b" || true)
+[ "$issued_web" = "1" ] || fail "reemitió el certificado de $TERMINATE_HOST en vez de cargarlo del almacén ($issued_web)"
 echo "   ok"
 
 echo "7. una segunda instancia con el mismo token queda en espera"
@@ -100,7 +103,20 @@ issued=$(dc logs agent2 | grep -c 'certificate obtained successfully' || true)
 [ "$issued" = "0" ] || fail "agent2 reemitió el certificado ($issued)"
 echo "   ok"
 
-echo "10. rotar el token desconecta al agente"
+echo "10. terminate tcp://: el agente termina TLS y entrega MQTT plano al backend"
+mqtt_roundtrip() {
+  docker run --rm --network wgrelay-e2e_default -v "$PWD/pebble-root.pem:/ca.pem:ro" eclipse-mosquitto:2 sh -c "
+    mosquitto_sub -h $TERMINATE_HOST_TCP -p 8443 --cafile /ca.pem -t e2e/tcp -C 1 -W 10 &
+    sleep 2
+    mosquitto_pub -h $TERMINATE_HOST_TCP -p 8443 --cafile /ca.pem -t e2e/tcp -m ok
+    wait" 2>/dev/null
+}
+out=""
+for i in $(seq 1 40); do out=$(mqtt_roundtrip); [ "$out" = "ok" ] && break; sleep 2; done
+[ "$out" = "ok" ] || fail "MQTT sobre terminate tcp:// no funcionó (out=$out)"
+echo "   ok"
+
+echo "11. rotar el token desconecta al agente"
 dc exec -T api wgrelay-api tunnel rotate-token --id 1 >/dev/null
 for i in $(seq 1 25); do dc ps agent2 --status exited | grep -q agent2 && break; sleep 1; done
 dc logs agent2 | grep -q 'rechazó el token' || fail "agent2 no detectó el token rotado"

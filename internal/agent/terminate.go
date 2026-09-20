@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"log/slog"
@@ -14,10 +15,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/caddyserver/certmagic"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+
+	"github.com/AndyPecotche/wg-relay/internal/pipe"
 )
 
 // terminator atiende las rutas en modo terminate: obtiene los certificados,
@@ -27,17 +31,20 @@ import (
 // participe: el challenge entra por el :443 del nodo con el SNI del cliente y
 // se rutea hasta acá como cualquier otra conexión.
 type terminator struct {
-	cache   *certmagic.Cache
-	cfg     *certmagic.Config
-	srv     *http.Server
-	ln      *chanListener
-	proxies map[string]*httputil.ReverseProxy
-	log     *slog.Logger
+	cache      *certmagic.Cache
+	cfg        *certmagic.Config
+	tlsCfg     *tls.Config
+	srv        *http.Server
+	ln         *chanListener
+	proxies    map[string]*httputil.ReverseProxy // rutas http(s)://
+	tcpTargets map[string]string                 // rutas tcp://: host -> destino
+	log        *slog.Logger
 }
 
 func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagic.Storage, acme ACME, log *slog.Logger) (*terminator, error) {
 	hosts := make([]string, 0, len(routes))
 	proxies := make(map[string]*httputil.ReverseProxy, len(routes))
+	tcpTargets := make(map[string]string, len(routes))
 	for host, r := range routes {
 		if r.Mode != ModeTerminate {
 			continue
@@ -49,13 +56,19 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 		if err != nil {
 			return nil, fmt.Errorf("ruta %q: destino inválido: %w", host, err)
 		}
-		proxies[host] = &httputil.ReverseProxy{
-			Rewrite: func(pr *httputil.ProxyRequest) {
-				pr.SetURL(target)
-				pr.Out.Host = pr.In.Host // el backend ve el hostname público
-				pr.SetXForwarded()       // X-Forwarded-For con la IP real del visitante
-			},
-			ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+		if target.Scheme == "tcp" {
+			// El agente termina el TLS y entrega bytes crudos: sin HTTP de
+			// por medio. Mismo mecanismo de certificados que el resto.
+			tcpTargets[host] = target.Host
+		} else {
+			proxies[host] = &httputil.ReverseProxy{
+				Rewrite: func(pr *httputil.ProxyRequest) {
+					pr.SetURL(target)
+					pr.Out.Host = pr.In.Host // el backend ve el hostname público
+					pr.SetXForwarded()       // X-Forwarded-For con la IP real del visitante
+				},
+				ErrorLog: slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+			}
 		}
 		hosts = append(hosts, host)
 	}
@@ -93,9 +106,9 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 		Logger:               zl,
 	})}
 
-	t := &terminator{cache: cache, cfg: cfg, proxies: proxies, log: log}
 	tlsCfg := cfg.TLSConfig()
 	tlsCfg.NextProtos = append([]string{"h2", "http/1.1"}, tlsCfg.NextProtos...)
+	t := &terminator{cache: cache, cfg: cfg, tlsCfg: tlsCfg, proxies: proxies, tcpTargets: tcpTargets, log: log}
 	t.ln = newChanListener()
 	t.srv = &http.Server{
 		Handler:   http.HandlerFunc(t.serveHTTP),
@@ -108,8 +121,22 @@ func newTerminator(ctx context.Context, routes map[string]RouteSpec, st certmagi
 		return nil, err
 	}
 	go t.srv.ServeTLS(t.ln, "", "")
-	log.Info("terminando TLS", "hosts", strings.Join(hosts, ", "))
+	if len(proxies) > 0 {
+		log.Info("terminando TLS (HTTP)", "hosts", strings.Join(sortedKeys(proxies), ", "))
+	}
+	if len(tcpTargets) > 0 {
+		log.Info("terminando TLS (TCP)", "hosts", strings.Join(sortedKeys(tcpTargets), ", "))
+	}
 	return t, nil
+}
+
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (t *terminator) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -125,11 +152,38 @@ func (t *terminator) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-// handle entrega una conexión ya aceptada al servidor HTTPS interno.
-func (t *terminator) handle(conn net.Conn) {
+// handle despacha una conexión ya aceptada: al servidor HTTPS interno si el
+// host está en modo terminate http(s), o directo al backend TCP si es tcp://.
+func (t *terminator) handle(conn net.Conn, host string) {
+	if target, ok := t.tcpTargets[host]; ok {
+		t.handleTCP(conn, target)
+		return
+	}
 	if !t.ln.push(conn) {
 		conn.Close()
 	}
+}
+
+// handleTCP hace el handshake TLS a mano (el mismo tls.Config que usa el
+// servidor HTTP, así que ACME y TLS-ALPN-01 funcionan igual) y después copia
+// bytes crudos hacia el backend: el agente termina TLS, pero no sabe ni le
+// importa qué protocolo va adentro.
+func (t *terminator) handleTCP(conn net.Conn, target string) {
+	tlsConn := tls.Server(conn, t.tlsCfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		t.log.Debug("handshake TLS falló (terminate tcp)", "target", target, "err", err)
+		conn.Close()
+		return
+	}
+	up, err := net.DialTimeout("tcp", target, 5*time.Second)
+	if err != nil {
+		t.log.Warn("no se pudo conectar al destino (terminate tcp)", "target", target, "err", err)
+		tlsConn.Close()
+		return
+	}
+	pipe.Join(tlsConn, up)
 }
 
 func (t *terminator) close() {

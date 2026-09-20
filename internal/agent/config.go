@@ -80,13 +80,21 @@ func LoadFile(path string) (File, error) {
 		case r.Host == "":
 			return File{}, fmt.Errorf("ruta %d: falta host", i+1)
 		case r.Mode == ModeTerminate:
-			// En terminate el destino es una URL: el agente habla HTTP con él.
+			// En terminate el destino es una URL. Sin esquema se asume HTTP,
+			// que es el caso más común (paneles web, APIs). "tcp://" es para
+			// protocolos que no son HTTP: el agente termina el TLS igual,
+			// pero entrega bytes crudos al backend en vez de proxear HTTP.
 			if !strings.Contains(r.To, "://") {
 				r.To = "http://" + r.To
 			}
 			u, err := url.Parse(r.To)
-			if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
-				return File{}, fmt.Errorf("ruta %q: to debe ser una URL http(s), por ejemplo http://influxdb:8086", r.Host)
+			if err != nil || u.Host == "" {
+				return File{}, fmt.Errorf("ruta %q: to debe ser una URL http(s) o tcp, por ejemplo http://influxdb:8086 o tcp://emqx:1883", r.Host)
+			}
+			switch u.Scheme {
+			case "http", "https", "tcp":
+			default:
+				return File{}, fmt.Errorf("ruta %q: esquema %q no soportado en modo terminate (usá http://, https:// o tcp://)", r.Host, u.Scheme)
 			}
 		case r.Mode == ModePassthrough:
 			if _, _, err := net.SplitHostPort(r.To); err != nil {

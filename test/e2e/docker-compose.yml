@@ -25,9 +25,11 @@ services:
     ports: ["127.0.0.1:18443:8443", "127.0.0.1:18080:8080"]
     networks:
       default:
-        # Pebble resuelve el hostname del tunnel por DNS de Docker y tiene que
-        # llegar al nodo, que es quien escucha el :8443.
-        aliases: ["${TERMINATE_HOST:-sin-configurar.invalid}"]
+        # Pebble resuelve los hostnames de terminate por DNS de Docker y tiene
+        # que llegar al nodo, que es quien escucha el :8443.
+        aliases:
+          - "${TERMINATE_HOST:-sin-configurar.invalid}"
+          - "${TERMINATE_HOST_TCP:-sin-configurar-tcp.invalid}"
     profiles: [relay]
 
   # Backend del "cliente": termina TLS él mismo (modo passthrough).
@@ -48,9 +50,16 @@ services:
     volumes: ["./pebble-config.json:/test/config/pebble-config.json:ro"]
     profiles: [relay]
 
-  # Backend HTTP del cliente para el modo terminate.
+  # Backend HTTP del cliente para el modo terminate (http://).
   webbackend:
     image: traefik/whoami
+    profiles: [relay]
+
+  # Backend MQTT del cliente para el modo terminate (tcp://): plano, sin TLS
+  # ni certificados propios. El agente termina el TLS delante de él.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
     profiles: [relay]
 
   agent:

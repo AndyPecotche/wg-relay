@@ -28,9 +28,9 @@ el agente con tu servicio**.
 | Modo | `to:` | Termina TLS | Habla con el servicio | Estado |
 |---|---|---|---|---|
 | `terminate` HTTP | `http://api:3000` | el agente | HTTP plano | ✅ |
-| `terminate` TCP | `tcp://emqx:1883` | el agente | TCP plano | ❌ **falta (§6.1)** |
+| `terminate` TCP | `tcp://emqx:1883` | el agente | TCP plano | ✅ |
 | `passthrough` | `emqx:8883` | tu servicio | TLS | ✅ |
-| `tcp` (puerto dedicado) | `postgres:5432` | nadie | TCP plano | ❌ futuro (§6.3) |
+| `tcp` (puerto dedicado) | `postgres:5432` | nadie | TCP plano | ❌ futuro (§6.2) |
 
 ```
 terminate   internet ──TLS──► nodo ──► agente ──[descifra]──► servicio (plano)
@@ -86,8 +86,7 @@ routes:
   - host: api                    # → https://api.dsk7yrh.clients...
     to: http://api:3000
   - host: mqtt                   # → mqtts://mqtt.dsk7yrh.clients...:443
-    mode: passthrough
-    to: emqx:8883
+    to: tcp://emqx:1883
 ```
 
 ```yaml
@@ -105,7 +104,7 @@ networks:
 | | Cubierto hoy |
 |---|---|
 | frontend y api | ✅ certificados automáticos, cero configuración |
-| mqtt | ⚠️ solo en `passthrough`: EMQX necesita sus propios certificados (§3) |
+| mqtt | ✅ `terminate` con `to: tcp://`: EMQX no necesita certificados propios |
 
 ### A.L — servicios en localhost
 
@@ -118,8 +117,7 @@ routes:
   - host: api
     to: http://127.0.0.1:3000
   - host: mqtt
-    mode: passthrough
-    to: 127.0.0.1:8883
+    to: tcp://127.0.0.1:1883
 ```
 
 ```yaml
@@ -159,7 +157,12 @@ derivada del token que el servicio no puede calcular. Por eso el agente no
 necesita volúmenes y sobrevive a reinicios sin reemitir.
 
 **Limitación:** TLS-ALPN-01 no emite comodines. Hoy hay que declarar cada
-subdominio. Con DNS-01 (§6.2) eso desaparece.
+subdominio. Con DNS-01 (§6.1) eso desaparece.
+
+Funciona igual para HTTP y para TCP: `to: http://api:3000` proxea HTTP,
+`to: tcp://emqx:1883` termina el TLS y entrega bytes crudos. El certificado
+se obtiene de la misma forma en los dos casos; lo único que cambia es qué
+hace el agente con la conexión ya descifrada.
 
 ### 3.2 Se los damos exportados (`export_cert`) ❌ falta
 
@@ -216,15 +219,27 @@ Alguien con `example.com` pero sin IP pública. Lo que va a tener que hacer:
    dominio de un tercero y quedar en posición de interceptarlo el día que ese
    tercero migre hacia nosotros.
 
-**Certificados:** TLS-ALPN-01 funciona igual, sin que el usuario configure
-nada. Para comodines sobre su propio dominio, en cambio, el DNS lo controla él,
-así que tendría que aportar credenciales de su proveedor de DNS al agente.
+**Certificados:** para un hostname puntual en `terminate`, TLS-ALPN-01
+funciona igual, sin que el usuario configure nada. Para wildcard, el DNS-01 lo
+resuelve **el agente**, no nuestro servidor: la zona es del usuario y no
+queremos (ni podemos) tener acceso a ella. Tres formas, de más a menos
+automatizada (detalle técnico en [DESIGN.md §6.5](DESIGN.md)):
+
+1. **Token de su proveedor DNS, configurado localmente en el agente.** Nunca
+   llega a nuestro servidor. Vía `lego`, sirve para ~150 proveedores.
+2. **CNAME delegado** (recomendada): el usuario crea una vez
+   `_acme-challenge.example.com CNAME algo.acme.wg-relay.andy.net.ar`, y a
+   partir de ahí las renovaciones las resolvemos nosotros en nuestra propia
+   zona, sin que el usuario nos dé ninguna credencial ni tenga que volver a
+   intervenir.
+3. **Manual**: el usuario pega el TXT a mano en su proveedor, cada ~90 días.
 
 | | Estado |
 |---|---|
 | Rutear un dominio propio | ❌ el agente rechaza FQDN fuera del dominio asignado |
 | Verificación de propiedad | ❌ sin implementar |
-| Certificados para dominio propio | ✅ el mecanismo ya sirve, falta habilitar las rutas |
+| Certificados para dominio propio (hostname puntual) | ✅ el mecanismo ya sirve, falta habilitar las rutas |
+| Certificados para dominio propio (wildcard) | ❌ requiere DNS-01 del lado del agente |
 
 ---
 
@@ -253,44 +268,7 @@ visitante al proxy del usuario; sin eso, vería siempre la IP del túnel.
 
 ## 6. Lo que falta
 
-### 6.1 `terminate` para protocolos que no son HTTP ❌ **el hueco más importante**
-
-Hoy `terminate` solo sabe hablar HTTP con el backend. El caso más natural del
-producto **no está cubierto**:
-
-> "Tengo un EMQX escuchando MQTT en 1883, o un Postgres en 5432, y quiero
-> exponerlo a internet con TLS sin tocar nada."
-
-Hoy eso obliga al usuario a poner Caddy con el plugin layer4, o a configurar
-certificados dentro de EMQX. Las dos cosas son exactamente lo que el producto
-debería evitarle.
-
-La solución es dejar que el esquema del destino elija el comportamiento:
-
-```yaml
-routes:
-  - host: mqtt
-    to: tcp://emqx:1883          # el agente termina TLS y entrega TCP plano
-```
-
-Técnicamente es poco trabajo: el agente ya termina TLS para HTTP; falta la
-variante que, en vez de pasarle la conexión descifrada a un `ReverseProxy`, se
-la pase a un `net.Dial` y copie bytes. El certificado se obtiene igual, por
-TLS-ALPN-01.
-
-Con eso, el stack de ejemplo queda así, sin Caddy y sin certificados en EMQX:
-
-```yaml
-routes:
-  - host: app
-    to: http://frontend:80
-  - host: api
-    to: http://api:3000
-  - host: mqtt
-    to: tcp://emqx:1883
-```
-
-### 6.2 Certificados comodín y `export_cert` ❌ (F1b)
+### 6.1 Certificados comodín y `export_cert` ❌ (F1b)
 
 Necesitan DNS-01 delegado: un endpoint en el control plane que escriba el TXT
 del challenge en Cloudflare, validando que el nombre cae dentro de la zona del
@@ -301,7 +279,7 @@ tunnel autenticado. Habilita:
 - Certificados para hostnames en `passthrough`, donde el challenge nunca
   llegaría al agente.
 
-### 6.3 Puertos dedicados (TCP y UDP crudos) ❌ futuro
+### 6.2 Puertos dedicados (TCP y UDP crudos) ❌ futuro
 
 Todo lo anterior vive sobre el `:443` y se multiplexa por SNI, así que
 **requiere que el cliente hable TLS y envíe SNI**. Queda afuera:
@@ -322,20 +300,18 @@ reservado para un plan pago.
 | Caso de uso | Estado |
 |---|---|
 | Frontend y API HTTP con certificados automáticos (Docker o localhost) | ✅ |
+| **Exponer MQTT/Postgres con TLS sin configurar nada** (`terminate` + `tcp://`) | ✅ |
 | Exponer un servicio TLS propio sin tocarlo (`passthrough`) | ✅ |
 | Comodín para que el usuario haga lo que quiera con su propio proxy | ✅ |
 | IP real del visitante hacia el backend (PROXY protocol) | ✅ |
 | Failover: dos servidores con el mismo token, el segundo espera | ✅ |
-| **Exponer MQTT/Postgres con TLS sin configurar nada** | ❌ §6.1 |
-| Certificado comodín y `export_cert` | ❌ §6.2 |
+| Certificado comodín y `export_cert` | ❌ §6.1 |
 | Dominio propio del usuario | ❌ §4 |
-| Clientes sin SNI, protocolos sin TLS, UDP | ❌ §6.3 |
+| Clientes sin SNI, protocolos sin TLS, UDP | ❌ §6.2 |
 
 ### Orden sugerido
 
-1. **§6.1 `tcp://` en modo terminate.** Poco trabajo y cierra el caso de uso
-   más representativo del producto.
-2. **§6.2 DNS-01 delegado.** Comodines y `export_cert`.
-3. **§4 dominios propios.** Es lo que convierte el servicio en algo usable por
+1. **§6.1 DNS-01 delegado.** Comodines y `export_cert`.
+2. **§4 dominios propios.** Es lo que convierte el servicio en algo usable por
    alguien con una marca.
-4. **§6.3 puertos dedicados.** Recién cuando aparezca un caso real que lo pida.
+3. **§6.2 puertos dedicados.** Recién cuando aparezca un caso real que lo pida.
