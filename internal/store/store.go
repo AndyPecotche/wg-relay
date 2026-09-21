@@ -285,6 +285,21 @@ func (s *Store) SetNodePublicIP(ctx context.Context, nodeID int64, publicIP stri
 	return nil
 }
 
+// SetNodeEndpoint corrige el endpoint WireGuard (host:puerto) de un nodo ya
+// existente, ej. para migrarlo a un dominio nuevo sin recrear el nodo (lo
+// que invalidaría su token y reasignaría gateway_ip). Los agentes lo toman
+// en la próxima sincronización, no hace falta tocarlos.
+func (s *Store) SetNodeEndpoint(ctx context.Context, nodeID int64, endpoint string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE node SET endpoint = $2 WHERE id = $1`, nodeID, endpoint)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, name, endpoint, host(gateway_ip), COALESCE(wg_pubkey, ''), COALESCE(host(public_ip), ''), last_seen_at

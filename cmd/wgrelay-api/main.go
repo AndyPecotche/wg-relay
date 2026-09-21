@@ -153,6 +153,8 @@ func main() {
 		err = nodeList(ctx, st)
 	case "node set-public-ip":
 		err = nodeSetPublicIP(ctx, st, args[2:])
+	case "node set-endpoint":
+		err = nodeSetEndpoint(ctx, st, args[2:])
 	case "dns sync":
 		err = dnsSync(ctx, cfg, st)
 	default:
@@ -171,6 +173,7 @@ const usage = `uso:
   wgrelay-api node create --name NOMBRE --endpoint HOST:51820 [--public-ip IP]
   wgrelay-api node list
   wgrelay-api node set-public-ip --id ID --public-ip IP
+  wgrelay-api node set-endpoint --id ID --endpoint HOST:51820
   wgrelay-api dns sync`
 
 func serve(ctx context.Context, cfg config, st *store.Store, log *slog.Logger) error {
@@ -310,6 +313,21 @@ func nodeSetPublicIP(ctx context.Context, st *store.Store, args []string) error 
 		return err
 	}
 	fmt.Printf("Nodo %d actualizado: public_ip = %s\n", *id, *publicIP)
+	return nil
+}
+
+func nodeSetEndpoint(ctx context.Context, st *store.Store, args []string) error {
+	fs := flag.NewFlagSet("node set-endpoint", flag.ExitOnError)
+	id := fs.Int64("id", 0, "id del nodo")
+	endpoint := fs.String("endpoint", "", "host:puerto UDP público de WireGuard, ej. node1.wg-relay.wgr.com.ar:51820")
+	fs.Parse(args)
+	if *id == 0 || *endpoint == "" {
+		return errors.New("--id y --endpoint son obligatorios")
+	}
+	if err := st.SetNodeEndpoint(ctx, *id, *endpoint); err != nil {
+		return err
+	}
+	fmt.Printf("Nodo %d actualizado: endpoint = %s\n", *id, *endpoint)
 	return nil
 }
 
