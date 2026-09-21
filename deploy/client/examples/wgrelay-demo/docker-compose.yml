@@ -1,0 +1,31 @@
+services:
+  whoami:
+    image: traefik/whoami
+    networks: [demo]
+
+  # Backend "puro" para el ejemplo terminate tcp://: MQTT plano, sin TLS. El
+  # TLS lo pone el agente delante; mosquitto ni se entera.
+  mosquitto:
+    image: eclipse-mosquitto:2
+    volumes: ["./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
+    networks: [demo]
+
+  # Backend que termina su propio TLS (autofirmado), para el ejemplo
+  # passthrough: el agente reenvía los bytes intactos, sin ver el
+  # certificado.
+  tlsbackend:
+    image: alpine:3.20
+    command: sh -c "apk add -q openssl && openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=tlsbackend -keyout /k -out /c -days 1 2>/dev/null && openssl s_server -quiet -accept 8443 -cert /c -key /k -www"
+    networks: [demo]
+
+  wgrelay:
+    image: ghcr.io/andypecotche/wg-relay-agent:0.0.3
+    restart: unless-stopped
+    environment:
+      WGRELAY_TOKEN: ${WGRELAY_TOKEN:?}
+    volumes:
+      - ./wgrelay.yml:/etc/wgrelay/wgrelay.yml:ro
+    networks: [demo]
+
+networks:
+  demo:

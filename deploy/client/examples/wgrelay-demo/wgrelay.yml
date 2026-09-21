@@ -1,0 +1,36 @@
+relay: https://api.wg-relay.andy.net.ar
+
+acme:
+  email: vos@ejemplo.com
+  # Mientras estés iterando (recreando tunnels, probando rutas), usá staging
+  # para no gastar la cuota real de Let's Encrypt — el certificado no será
+  # confiable (curl -k). Sacá esta línea para la prueba final "de verdad".
+  ca: https://acme-staging-v02.api.letsencrypt.org/directory
+
+routes:
+  # terminate (default): TLS-ALPN-01, no necesita el DNS propio para el
+  # certificado — deja aislado lo que estamos probando (que resuelva el
+  # hostname), sin mezclarlo con DNS-01/wildcard.
+  - host: demo
+    to: http://whoami:80
+
+  # comodín: cualquier subdominio no enumerado cae acá (después de probar
+  # los hosts exactos de arriba). Es la contraparte, del lado del agente,
+  # del catch-all del nodo: el DNS ya resuelve cualquier nombre bajo la
+  # zona a la misma IP, y esta ruta hace que también se sirva sin
+  # declararlo de antemano.
+  - host: "*"
+    to: http://whoami:80
+
+  # terminate con to: tcp:// — el agente termina el TLS igual que arriba,
+  # pero entrega bytes crudos (sin proxear HTTP) al backend. Para
+  # protocolos no-HTTP como MQTT.
+  - host: mqtt
+    to: tcp://mosquitto:1883
+
+  # passthrough — el backend termina su propio TLS; el agente solo reenvía
+  # los bytes tal cual, sin ver el certificado. to: es host:puerto, sin
+  # esquema (a diferencia de terminate).
+  - host: tls
+    mode: passthrough
+    to: tlsbackend:8443
