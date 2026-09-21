@@ -140,21 +140,18 @@ docker compose exec api wgrelay-api node set-public-ip --id 1 --public-ip VPS_IP
 
 ## Parte 3 — Verificar el DNS SIN tocar nada público (riesgo cero)
 
-Primero, local, desde dentro del propio VPS, contra el puerto interno del
-contenedor:
+La imagen del nodo es distroless (sin shell, no se puede hacer `docker
+compose exec node sh`), así que probamos desde el host del VPS con `dig`
+(instalalo si hace falta: `apt install -y dnsutils` / `apk add bind-tools`,
+según la distro), contra `localhost` en el puerto **`53`** — el que publica
+`docker-compose.yml` (`"53:5300/udp"`/`"53:5300/tcp"`, formato
+`HOST:CONTENEDOR`: el `5300` es el puerto interno del contenedor, no el que
+hay que consultar desde afuera de él):
 
 ```sh
-docker compose exec node sh -c 'echo esto probablemente no funciona: no hay shell en la imagen'
-```
-
-La imagen del nodo es distroless (sin shell), así que probamos desde el
-host del VPS con `dig` (instalalo si hace falta: `apt install -y
-dnsutils` / `apk add bind-tools`, según la distro):
-
-```sh
-dig @127.0.0.1 -p 5300 NS clients.wg-relay.andy.net.ar
-dig @127.0.0.1 -p 5300 A cualquiercosa.clients.wg-relay.andy.net.ar
-dig @127.0.0.1 -p 5300 A clients.wg-relay.andy.net.ar
+dig @127.0.0.1 NS clients.wg-relay.andy.net.ar
+dig @127.0.0.1 A cualquiercosa.clients.wg-relay.andy.net.ar
+dig @127.0.0.1 A clients.wg-relay.andy.net.ar
 ```
 
 Esperado:
@@ -355,7 +352,7 @@ llamara a ninguna API externa, y resolvió en el DNS público real.
 | Síntoma | Dónde mirar |
 |---|---|
 | `docker compose up` falla: `failed to bind host port 0.0.0.0:53` | `systemd-resolved` (`sudo ss -tlnp sport = :53`) — desactivar `DNSStubListener` en `/etc/systemd/resolved.conf` (ver Parte 2). Si no es eso, buscar otro contenedor viejo publicando el `53` |
-| `dig @127.0.0.1 -p 5300` no contesta nada | `docker compose logs node`: ¿arrancó el listener? ¿`WGRELAY_DNS_LISTEN` quedó comentado? |
+| `dig @127.0.0.1` no contesta nada | `docker compose logs node`: ¿arrancó el listener? ¿`WGRELAY_DNS_LISTEN` quedó comentado? ¿el `53:5300` de `ports:` sigue comentado también? |
 | Contesta localhost pero no desde afuera | Firewall del VPS (¿`53/udp` Y `53/tcp` abiertos? Pebble/ACME real también puede necesitar TCP) |
 | `NS` no trae nada / trae vacío | `WGRELAY_DNS_NS_NAMES` vacío en el `.env` de la API, o la API no se reinició después de setearlo |
 | `A` de un subdominio no trae nada | `node list` → ¿el nodo tiene `public_ip` cargada? ¿está "activo" (heartbeat reciente)? |
