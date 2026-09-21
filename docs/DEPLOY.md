@@ -3,15 +3,15 @@
 Guía paso a paso para levantar wg-relay con **un nodo**, y después sumar
 **más nodos**. Cada VM solo necesita Docker y una IPv4 pública.
 
-Los ejemplos usan `andy.net.ar`. Cualquier otro dominio funciona igual: todos
+Los ejemplos usan `wgr.com.ar`. Cualquier otro dominio funciona igual: todos
 los nombres se configuran en `.env`.
 
 | Nombre | Para qué |
 |---|---|
-| `api.wg-relay.andy.net.ar` | API del control plane (agentes y nodos hablan con ella) |
-| `wg-relay.andy.net.ar` | *Edge*: un registro A por cada nodo. Los clientes apuntan acá |
-| `node1.wg-relay.andy.net.ar` | Endpoint WireGuard de cada nodo (uno por nodo) |
-| `*.clients.wg-relay.andy.net.ar` | Subdominios de clientes (los crea la API) |
+| `api.wg-relay.wgr.com.ar` | API del control plane (agentes y nodos hablan con ella) |
+| `wg-relay.wgr.com.ar` | *Edge*: un registro A por cada nodo. Los clientes apuntan acá |
+| `node1.wg-relay.wgr.com.ar` | Endpoint WireGuard de cada nodo (uno por nodo) |
+| `*.clients.wg-relay.wgr.com.ar` | Subdominios de clientes (los crea la API) |
 
 ---
 
@@ -19,7 +19,7 @@ los nombres se configuran en `.env`.
 
 ### DNS
 
-En Cloudflare, zona `andy.net.ar`. **Todos en "DNS only" (nube gris)**: con el
+En Cloudflare, zona `wgr.com.ar`. **Todos en "DNS only" (nube gris)**: con el
 proxy de Cloudflare activado, Cloudflare terminaría el TLS y nada funcionaría.
 
 - [ ] `api.wg-relay` → **A** → IP de la VM 1
@@ -34,31 +34,31 @@ los registros para crearlos a mano. Dos caminos, ver DESIGN.md §4.3:
 #### Opción A — Cloudflare (opcional)
 
 - [ ] Crear token en *My Profile → API Tokens → Create Token → Edit zone DNS*,
-      zona `andy.net.ar`.
+      zona `wgr.com.ar`.
 - [ ] Copiar el *Zone ID* (panel de la zona, columna derecha, "API").
 - [ ] Completar `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID` en `.env`.
 
 > Cloudflare no permite limitar un token a un subdominio: este token puede
-> editar toda la zona `andy.net.ar`. El código solo escribe bajo el dominio
+> editar toda la zona `wgr.com.ar`. El código solo escribe bajo el dominio
 > base, pero si en algún momento abrís el servicio a terceros conviene mover
 > los clientes a un dominio dedicado (ver DESIGN.md §4.3).
 
 #### Opción B — DNS propio en los nodos (sin token, sin cuota)
 
-Los nodos sirven ellos mismos `clients.wg-relay.andy.net.ar` como DNS
+Los nodos sirven ellos mismos `clients.wg-relay.wgr.com.ar` como DNS
 autoritativo (`internal/dnsserver`, DESIGN.md §4.3.1). El único paso es
 delegar ese subdominio por NS — sin glue records, porque los nombres de los
 nameservers quedan afuera de lo delegado:
 
-- [ ] En Cloudflare (zona `andy.net.ar`), crear dos registros A comunes para
+- [ ] En Cloudflare (zona `wgr.com.ar`), crear dos registros A comunes para
       los nodos que van a ser nameservers, ej. `ns1.wg-relay` → IP de node1,
       `ns2.wg-relay` → IP de node2 (con al menos dos, la delegación sigue
       funcionando si uno cae).
 - [ ] Crear dos registros **NS** delegando el subdominio:
-      `clients.wg-relay` → `ns1.wg-relay.andy.net.ar.` y
-      `ns2.wg-relay.andy.net.ar.`.
-- [ ] En `.env` de la API: `WGRELAY_DNS_NS_NAMES=ns1.wg-relay.andy.net.ar,ns2.wg-relay.andy.net.ar`
-      y `WGRELAY_DNS_SOA_EMAIL=admin@andy.net.ar`.
+      `clients.wg-relay` → `ns1.wg-relay.wgr.com.ar.` y
+      `ns2.wg-relay.wgr.com.ar.`.
+- [ ] En `.env` de la API: `WGRELAY_DNS_NS_NAMES=ns1.wg-relay.wgr.com.ar,ns2.wg-relay.wgr.com.ar`
+      y `WGRELAY_DNS_SOA_EMAIL=admin@wgr.com.ar`.
 - [ ] En `.env`/compose de **cada** nodo que declaraste como NS (node1, node2):
       descomentar `WGRELAY_DNS_LISTEN` y los puertos `53:5300/udp`+`53:5300/tcp`.
 - [ ] En `node create`, pasarle `--public-ip` a **todos** los nodos (no solo a
@@ -66,8 +66,8 @@ nameservers quedan afuera de lo delegado:
 - [ ] Verificar (puede tardar mientras se propaga la delegación en el mundo,
       pero la consulta directa al nameserver no depende de eso):
       ```sh
-      dig NS clients.wg-relay.andy.net.ar @ns1.wg-relay.andy.net.ar
-      dig A cualquiercosa.clients.wg-relay.andy.net.ar @ns1.wg-relay.andy.net.ar
+      dig NS clients.wg-relay.wgr.com.ar @ns1.wg-relay.wgr.com.ar
+      dig A cualquiercosa.clients.wg-relay.wgr.com.ar @ns1.wg-relay.wgr.com.ar
       ```
 
 > **`systemd-resolved` suele ocupar el `:53` del host.** Si `docker compose
@@ -116,7 +116,7 @@ cp .env.example .env
       (`--public-ip` es opcional, hace falta solo para DNS propio, opción B de
       arriba):
   ```sh
-  docker compose exec api wgrelay-api node create --name node1 --endpoint node1.wg-relay.andy.net.ar:51820 --public-ip 203.0.113.10
+  docker compose exec api wgrelay-api node create --name node1 --endpoint node1.wg-relay.wgr.com.ar:51820 --public-ip 203.0.113.10
   ```
 - [ ] Levantar todo:
   ```sh
@@ -124,7 +124,7 @@ cp .env.example .env
   ```
 - [ ] Verificar (la primera vez tarda unos segundos mientras saca el certificado):
   ```sh
-  curl https://api.wg-relay.andy.net.ar/healthz        # → ok
+  curl https://api.wg-relay.wgr.com.ar/healthz        # → ok
   docker compose exec api wgrelay-api node list        # node1, "0s atrás"
   ```
 
@@ -170,7 +170,7 @@ Por cada VM nueva:
       opción B de la Parte 1 — todos los nodos cuentan para el set de IPs que
       contesta, no solo los declarados como nameserver):
   ```sh
-  docker compose exec api wgrelay-api node create --name node2 --endpoint node2.wg-relay.andy.net.ar:51820 --public-ip 203.0.113.11
+  docker compose exec api wgrelay-api node create --name node2 --endpoint node2.wg-relay.wgr.com.ar:51820 --public-ip 203.0.113.11
   ```
 
 ### En la VM nueva

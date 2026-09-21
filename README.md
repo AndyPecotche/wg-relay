@@ -15,7 +15,7 @@ relay vea tu tráfico**: el TLS llega intacto a tu servidor.
 
 ```yaml
 # wgrelay.yml — se puede commitear, no tiene secretos
-relay: https://api.wg-relay.andy.net.ar
+relay: https://api.wg-relay.wgr.com.ar
 acme:
   email: vos@ejemplo.com
 routes:
@@ -33,13 +33,13 @@ docker compose up -d                     # ver deploy/client/
 ```
 
 ```
-  Dominio:  o67fzaw.clients.wg-relay.andy.net.ar
+  Dominio:  o67fzaw.clients.wg-relay.wgr.com.ar
 
-  influx.o67fzaw.clients.wg-relay.andy.net.ar:443  →  http://influxdb:8086  (terminate)
-  mqtt.o67fzaw.clients.wg-relay.andy.net.ar:443    →  emqx:8883  (passthrough)
+  influx.o67fzaw.clients.wg-relay.wgr.com.ar:443  →  http://influxdb:8086  (terminate)
+  mqtt.o67fzaw.clients.wg-relay.wgr.com.ar:443    →  emqx:8883  (passthrough)
 
 level=INFO msg="túnel establecido" nodo=node1
-level=INFO msg="terminando TLS" hosts=influx.o67fzaw.clients.wg-relay.andy.net.ar
+level=INFO msg="terminando TLS" hosts=influx.o67fzaw.clients.wg-relay.wgr.com.ar
 ```
 
 ## Hospedarlo

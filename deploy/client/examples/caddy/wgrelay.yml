@@ -1,6 +1,6 @@
 # Todo el tráfico va a Caddy, que hace el resto. No hace falta declarar acá
 # cada subdominio: el comodín los cubre a todos.
-relay: https://api.wg-relay.andy.net.ar
+relay: https://api.wg-relay.wgr.com.ar
 
 routes:
   - host: "*"                 # cualquier subdominio → Caddy

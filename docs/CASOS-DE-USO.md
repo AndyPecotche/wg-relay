@@ -64,7 +64,7 @@ sin tener dominio propio.
 
 2. El usuario pone el token en `WGRELAY_TOKEN` y levanta el agente.
 3. El agente imprime el dominio asignado, por ejemplo
-   `dsk7yrh.clients.wg-relay.andy.net.ar`, y una línea por cada ruta.
+   `dsk7yrh.clients.wg-relay.wgr.com.ar`, y una línea por cada ruta.
 
 El dominio es **estable**: le pertenece a ese tunnel para siempre. Los
 registros DNS (`<sub>` y `*.<sub>`) los crea el control plane.
@@ -76,7 +76,7 @@ avisarle a nadie: `app.`, `api.`, `mqtt.`, `lo-que-sea.`
 
 ```yaml
 # wgrelay.yml
-relay: https://api.wg-relay.andy.net.ar
+relay: https://api.wg-relay.wgr.com.ar
 acme:
   email: usuario@ejemplo.com
 
@@ -206,9 +206,9 @@ Alguien con `example.com` pero sin IP pública. Lo que va a tener que hacer:
 
 1. Apuntar sus nombres al edge del servicio, por CNAME:
    ```
-   app.example.com    CNAME  wg-relay.andy.net.ar
-   api.example.com    CNAME  wg-relay.andy.net.ar
-   mqtt.example.com   CNAME  wg-relay.andy.net.ar
+   app.example.com    CNAME  wg-relay.wgr.com.ar
+   api.example.com    CNAME  wg-relay.wgr.com.ar
+   mqtt.example.com   CNAME  wg-relay.wgr.com.ar
    ```
    En el ápex (`example.com` pelado) `CNAME` no es válido: ahí hacen falta
    registros `A` a las IPs de los nodos, o el *CNAME flattening* de Cloudflare.
@@ -236,7 +236,7 @@ automatizada (detalle técnico en [DESIGN.md §6.5](DESIGN.md)):
 1. **Token de su proveedor DNS, configurado localmente en el agente.** Nunca
    llega a nuestro servidor. Vía `lego`, sirve para ~150 proveedores.
 2. **CNAME delegado** (recomendada): el usuario crea una vez
-   `_acme-challenge.example.com CNAME algo.acme.wg-relay.andy.net.ar`, y a
+   `_acme-challenge.example.com CNAME algo.acme.wg-relay.wgr.com.ar`, y a
    partir de ahí las renovaciones las resolvemos nosotros en nuestra propia
    zona, sin que el usuario nos dé ninguna credencial ni tenga que volver a
    intervenir.

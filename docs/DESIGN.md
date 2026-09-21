@@ -151,11 +151,11 @@ puede tener túnel con todos los nodos a la vez: cada nodo es un peer con
 
 | Nombre | Tipo | Quién lo crea |
 |---|---|---|
-| `wg-relay.andy.net.ar` (*edge*) | A, uno por nodo | Admin, al sumar un nodo |
-| `nodeN.wg-relay.andy.net.ar` | A | Admin, al sumar un nodo |
-| `api.wg-relay.andy.net.ar` | A → VM de la API | Admin, una vez |
-| `<sub>.clients.wg-relay.andy.net.ar` | CNAME → edge | API, al crear el tunnel |
-| `*.<sub>.clients.wg-relay.andy.net.ar` | CNAME → edge | API, al crear el tunnel |
+| `wg-relay.wgr.com.ar` (*edge*) | A, uno por nodo | Admin, al sumar un nodo |
+| `nodeN.wg-relay.wgr.com.ar` | A | Admin, al sumar un nodo |
+| `api.wg-relay.wgr.com.ar` | A → VM de la API | Admin, una vez |
+| `<sub>.clients.wg-relay.wgr.com.ar` | CNAME → edge | API, al crear el tunnel |
+| `*.<sub>.clients.wg-relay.wgr.com.ar` | CNAME → edge | API, al crear el tunnel |
 | `_acme-challenge.<sub>.clients...` | TXT, efímero | API, durante ACME [F1b] |
 
 Todos sin proxy (con Cloudflare, nube gris; cualquier otro proveedor con un
@@ -195,10 +195,10 @@ escribe un puente propio, del tamaño que necesite, contra el DNS que
 realmente use.
 
 **Alcance del token de Cloudflare.** La idea original era delegar
-`clients.wg-relay.andy.net.ar` como zona propia con un token limitado a ella.
+`clients.wg-relay.wgr.com.ar` como zona propia con un token limitado a ella.
 **No es posible en el plan gratuito:** Cloudflare solo admite zonas de
 subdominio en el plan Enterprise, y sus tokens no se pueden limitar a una
-parte de una zona. Hoy el token puede editar toda `andy.net.ar`; el código
+parte de una zona. Hoy el token puede editar toda `wgr.com.ar`; el código
 solo escribe bajo el dominio base.
 
 Antes de abrir el servicio a terceros: **mover los clientes a un dominio
@@ -209,7 +209,7 @@ List (§6.4).
 ### 4.3.1 DNS propio en los nodos (self-hosted)
 
 Una tercera opción, sin proveedor externo de ningún tipo: los propios nodos
-sirven `WGRELAY_BASE_DOMAIN` (`clients.wg-relay.andy.net.ar`) como DNS
+sirven `WGRELAY_BASE_DOMAIN` (`clients.wg-relay.wgr.com.ar`) como DNS
 autoritativo (`internal/dnsserver`). El único paso manual, de una sola vez,
 es delegar ese subárbol por NS en el registrador de la zona padre — sin
 token, sin cuota, sin `"proveedor de DNS no configurado"`.
@@ -244,7 +244,7 @@ Algoritmo de `internal/dnsserver.Answer` para cualquier nombre bajo la zona:
    nunca NXDOMAIN: el nombre conceptualmente existe, solo no hay ese dato
    ahora mismo.
 
-`api.wg-relay.andy.net.ar` y `nodeN.wg-relay.andy.net.ar` (§4.2) quedan
+`api.wg-relay.wgr.com.ar` y `nodeN.wg-relay.wgr.com.ar` (§4.2) quedan
 **fuera** de lo delegado y siguen siendo altas manuales en la zona padre,
 como hoy — no es una pérdida, es simplemente no tocar lo que ya funciona; y
 evita necesitar *glue records* (el nombre de un nameserver dentro de la zona
@@ -359,7 +359,7 @@ proveedor DNS del cliente (§6.5).
 
 La zona `clients.wg-relay...` es nuestra, y el agente **no tiene** acceso a
 ella — no porque sea técnicamente imposible dárselo, sino porque no queremos:
-el token que la escribe hoy es de toda la zona `andy.net.ar` (§4.3), y ni
+el token que la escribe hoy es de toda la zona `wgr.com.ar` (§4.3), y ni
 siquiera con una zona dedicada (plan Enterprise) se puede acotar un token de
 Cloudflare a un solo registro. Repartir ese token entre todos los agentes
 volvería a cada uno capaz de reescribir el DNS de cualquier otro tunnel, o el
@@ -437,7 +437,7 @@ variantes, de más a menos automatizada:
 | Variante | Qué le damos a quién | Esfuerzo recurrente |
 |---|---|---|
 | **Token del proveedor DNS al agente** | El cliente configura localmente en su `wgrelay.yml` un token de su propio proveedor (Cloudflare, Route53, DigitalOcean, ...). El token nunca sale de su servidor | Ninguno |
-| **CNAME delegado** (recomendada) | El cliente crea una sola vez `_acme-challenge.<dominio> CNAME algo.acme.wg-relay.andy.net.ar`. El control plane resuelve el DNS-01 en su propia zona, sin ninguna credencial del cliente | Ninguno, después del alta |
+| **CNAME delegado** (recomendada) | El cliente crea una sola vez `_acme-challenge.<dominio> CNAME algo.acme.wg-relay.wgr.com.ar`. El control plane resuelve el DNS-01 en su propia zona, sin ninguna credencial del cliente | Ninguno, después del alta |
 | **Manual** | El cliente pega a mano el TXT que le imprime el agente, en su propio proveedor, cada vez | Cada renovación (~90 días) |
 
 La variante de **token** usa `lego`, que trae soporte para ~150 proveedores de
@@ -584,7 +584,7 @@ tráfico sigue fluyendo.
 
 ```yaml
 # wgrelay.yml — versionable, sin secretos
-relay: https://api.wg-relay.andy.net.ar
+relay: https://api.wg-relay.wgr.com.ar
 routes:
   - host: mqtt              # relativo → mqtt.<dominio asignado>; "@" = el dominio
     mode: passthrough
@@ -686,7 +686,7 @@ al plan pago.
 | 12 | Un token = un servidor | Varios agentes activos por token | Unidad de aislamiento y cuota |
 | 13 | Un `certmagic.Config`/emisor ACME por tipo de desafío | Un solo emisor con todos los solvers juntos | acmez puede preferir dns-01 sobre TLS-ALPN-01 aunque no haga falta, acoplando certificados simples al proveedor DNS |
 | 14 | Interfaz `dnsprovider.Provider` propia + webhook para "cualquier otro" | Vendorizar un SDK por proveedor (Route53, DigitalOcean, ...) | Cada SDK de nube trae su propio árbol de dependencias (el de AWS por sí solo son ~15 módulos) en el binario de *todos*, lo usen o no; el webhook delega ese costo a quien realmente lo necesita |
-| 15 | DNS propio de `clients.*` con catch-all (`internal/dnsserver`) sobre el mismo long-poll de configuración de los nodos | Zona completa `wg-relay.andy.net.ar` con glue records; o un registro por tunnel | Sin glue: los nameservers quedan fuera de lo delegado. Sin registro por tunnel: el DNS no necesita la precisión que sí necesita el ruteo SNI (§5.1) |
+| 15 | DNS propio de `clients.*` con catch-all (`internal/dnsserver`) sobre el mismo long-poll de configuración de los nodos | Zona completa `wg-relay.wgr.com.ar` con glue records; o un registro por tunnel | Sin glue: los nameservers quedan fuera de lo delegado. Sin registro por tunnel: el DNS no necesita la precisión que sí necesita el ruteo SNI (§5.1) |
 
 ---
 
@@ -706,5 +706,5 @@ al plan pago.
 - **Delegación de DNS propio (§4.3.1) es manual y externa** — wg-relay no
   tiene forma de tocar la zona padre. Si la IP pública de un nodo declarado
   como nameserver cambia, hay que actualizar a mano el registro A de
-  `nsN.wg-relay.andy.net.ar` en el registrador, o esa delegación queda
+  `nsN.wg-relay.wgr.com.ar` en el registrador, o esa delegación queda
   "coja" (lame) hasta corregirlo.
